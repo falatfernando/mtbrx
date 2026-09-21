@@ -5,10 +5,18 @@ with open("requirements.txt") as f:
 
 setup(
     name="tb-dashboard",
-    version="1.0.0",
+    version="1.1.0",
     author="Fernando Falat",
     author_email="fernandofalat@proton.me",
     description="A web-based genomic explorer for Mycobacterium tuberculosis drug resistance mutations using the WHO catalogue.",
-    py_modules=["app", "data_utils", "coordinate_calculator"],
+    py_modules=[
+        "app",
+        "data_utils",
+        "coordinate_calculator",
+        "search_utils",
+        "genome_view",
+        "tables",
+        "layout",
+    ],
     install_requires=install_requires,
 )

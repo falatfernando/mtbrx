@@ -35,8 +35,14 @@ body {
 }
 
 .lab-logo {
-    height: 45px;
-    margin-right: 12px;
+    height: 62px;
+    width: auto;
+    transition: transform 0.2s ease, filter 0.2s ease;
+}
+
+.lab-logo:hover {
+    transform: scale(1.04);
+    filter: saturate(1.1);
 }
 
 /* Hero/Search Section */
@@ -57,6 +63,7 @@ body {
 .search-input {
     border: 2px solid var(--border-color);
     border-radius: 8px 0 0 8px !important;
+    min-width: 0;
     padding: 0.8rem 1.2rem;
     font-size: 1.1rem;
     transition: all 0.2s ease;
@@ -152,4 +159,481 @@ body {
     padding: 4rem 0 2rem;
     color: var(--text-muted);
     font-size: 0.9rem;
+}
+
+/* ==================================================================
+   Utility classes referenced by the layout
+   ================================================================== */
+.fw-500 {
+    font-weight: 500;
+}
+
+.letter-spacing-1 {
+    letter-spacing: 0.06em;
+}
+
+/* ==================================================================
+   Navigation actions and search affordances
+   ================================================================== */
+.nav-action {
+    color: var(--text-main) !important;
+    font-weight: 500;
+    border-radius: 8px;
+    transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+.nav-action:hover,
+.nav-action:focus {
+    background-color: rgba(156, 203, 203, 0.2);
+    color: var(--dark-teal) !important;
+}
+
+.cite-btn {
+    background-color: var(--primary-teal) !important;
+    border-color: var(--primary-teal) !important;
+    color: var(--white) !important;
+    border-radius: 20px !important;
+    font-weight: 600;
+    padding: 0.35rem 1rem;
+    white-space: nowrap;
+}
+
+.cite-btn:hover {
+    background-color: var(--dark-teal) !important;
+}
+
+.btn-soft {
+    background-color: transparent !important;
+    border: 1px solid var(--border-color) !important;
+    color: var(--text-main) !important;
+    border-radius: 8px !important;
+}
+
+.btn-soft:hover {
+    background-color: var(--light-bg) !important;
+    border-color: var(--secondary-teal) !important;
+    color: var(--dark-teal) !important;
+}
+
+.search-hint {
+    color: var(--text-muted);
+}
+
+.search-hint-code {
+    background-color: rgba(156, 203, 203, 0.18);
+    color: var(--dark-teal);
+    border-radius: 5px;
+    padding: 0.1rem 0.4rem;
+    font-size: 0.82rem;
+}
+
+/* ==================================================================
+   Tables: horizontal overflow and selectable text (TASK-07)
+   ================================================================== */
+.table-responsive-container {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    padding-bottom: 0.25rem;
+}
+
+.table-responsive-container::-webkit-scrollbar {
+    height: 10px;
+}
+
+.table-responsive-container::-webkit-scrollbar-thumb {
+    background-color: var(--secondary-teal);
+    border-radius: 6px;
+}
+
+/* Sequence and table text must stay selectable so it can be copied. */
+.dash-table-container,
+.dash-table-container table,
+.dash-table-container tr,
+.dash-table-container td,
+.dash-table-container th,
+.dash-table-container .dash-cell-value,
+.dash-table-container .dash-cell,
+.dash-table-container .dash-header {
+    user-select: text !important;
+    -webkit-user-select: text !important;
+    -moz-user-select: text !important;
+    -ms-user-select: text !important;
+}
+
+/* Keep pagination and filter controls reachable below a scrolled table. */
+.dash-table-container .previous-next-container {
+    padding-top: 0.5rem;
+}
+
+.column-toggle {
+    max-width: 640px;
+    font-size: 0.85rem;
+}
+
+/* ==================================================================
+   Gene neighbourhood track
+   ================================================================== */
+.neighborhood-graph .js-plotly-plot .plotly .cursor-crosshair,
+.neighborhood-graph .js-plotly-plot .plotly .nsewdrag {
+    cursor: pointer !important;
+}
+
+.legend-swatch {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 3px;
+    margin-right: 0.4rem;
+}
+
+.window-toggle {
+    display: inline-flex;
+    gap: 0.35rem;
+    flex-wrap: wrap;
+}
+
+.window-toggle-btn {
+    border: 1px solid var(--border-color) !important;
+    background: var(--white);
+    color: var(--text-muted) !important;
+    border-radius: 16px !important;
+    font-size: 0.78rem;
+    padding: 0.15rem 0.7rem;
+}
+
+.window-toggle-btn.active {
+    background-color: var(--primary-teal) !important;
+    border-color: var(--primary-teal) !important;
+    color: var(--white) !important;
+}
+
+.neighbor-btn {
+    background: transparent !important;
+    border: 1px solid var(--border-color) !important;
+    color: var(--dark-teal) !important;
+    border-radius: 16px !important;
+    font-size: 0.8rem;
+    padding: 0.2rem 0.7rem;
+}
+
+.neighbor-btn:hover:not(:disabled) {
+    background-color: rgba(156, 203, 203, 0.25) !important;
+    border-color: var(--secondary-teal) !important;
+}
+
+.gene-note {
+    color: var(--text-muted);
+    max-height: 7.5rem;
+    overflow-y: auto;
+    padding-right: 0.5rem;
+}
+
+/* ==================================================================
+   Sequence retrieval panel
+   ================================================================== */
+.sequence-output {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.78rem;
+    line-height: 1.5;
+    background-color: #F8FAFC;
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    padding: 0.85rem 1rem;
+    max-height: 18rem;
+    overflow: auto;
+    white-space: pre;
+    user-select: text !important;
+    margin-bottom: 0;
+}
+
+.allele-block {
+    max-height: 9rem;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+.copy-btn {
+    color: var(--primary-teal);
+    font-size: 1.05rem;
+    cursor: pointer;
+}
+
+.copy-btn:hover {
+    color: var(--dark-teal);
+}
+
+.allele-summary {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    word-break: break-all;
+}
+
+/* ==================================================================
+   Badges
+   ================================================================== */
+.badge-muted {
+    background-color: var(--border-color) !important;
+    color: var(--text-muted) !important;
+    font-weight: 600;
+    border-radius: 6px;
+}
+
+.badge-assoc {
+    background-color: rgba(180, 35, 24, 0.1) !important;
+    color: #B42318 !important;
+    font-weight: 600;
+    border-radius: 6px;
+}
+
+.badge-count {
+    background-color: var(--light-bg) !important;
+    color: var(--dark-teal) !important;
+    font-weight: 600;
+}
+
+.badge-line {
+    background-color: rgba(156, 203, 203, 0.28) !important;
+    color: var(--dark-teal) !important;
+    font-weight: 600;
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.badge-license,
+.badge-doi {
+    background-color: var(--dark-teal) !important;
+    color: var(--white) !important;
+    font-weight: 600;
+    border-radius: 5px;
+}
+
+.badge-doi {
+    background-color: var(--text-muted) !important;
+}
+
+/* ==================================================================
+   Browse by Drug chips
+   ================================================================== */
+.gene-chip {
+    background: var(--white) !important;
+    border: 1px solid var(--border-color) !important;
+    color: var(--text-main) !important;
+    border-radius: 18px !important;
+    padding: 0.3rem 0.8rem;
+    transition: all 0.15s ease;
+}
+
+.gene-chip:hover {
+    border-color: var(--primary-teal) !important;
+    background-color: rgba(156, 203, 203, 0.15) !important;
+    transform: translateY(-1px);
+}
+
+/* ==================================================================
+   Catalogue summary statistics
+   ================================================================== */
+.stat-card {
+    display: flex;
+    align-items: center;
+    gap: 0.9rem;
+    background: var(--white);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    padding: 1rem 1.1rem;
+    height: 100%;
+}
+
+.stat-icon {
+    font-size: 1.5rem;
+    color: var(--primary-teal);
+}
+
+.stat-value {
+    font-size: 1.35rem;
+    font-weight: 700;
+    line-height: 1.1;
+    color: var(--text-main);
+}
+
+.stat-label {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+/* ==================================================================
+   Citation modal
+   ================================================================== */
+.citation-block {
+    background-color: #F8FAFC;
+    border: 1px solid var(--border-color);
+    border-left: 3px solid var(--primary-teal);
+    border-radius: 8px;
+    padding: 0.85rem 1rem;
+    font-size: 0.83rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+    user-select: text !important;
+}
+
+/* ==================================================================
+   Non-catalogue notice (TASK-05)
+   ================================================================== */
+.info-card {
+    border-left: 4px solid var(--secondary-teal) !important;
+}
+
+/* ==================================================================
+   Institutional identity in the footer (TASK-15)
+   ================================================================== */
+.footer-lab-logo {
+    height: 52px;
+    width: auto;
+}
+
+.usp-logo {
+    width: auto;
+}
+
+.usp-wordmark {
+    display: inline-flex;
+    flex-direction: column;
+    line-height: 1.15;
+    border-left: 2px solid var(--border-color);
+    padding-left: 1rem;
+}
+
+.usp-wordmark-initials {
+    font-weight: 800;
+    font-size: 1.15rem;
+    letter-spacing: 0.08em;
+    color: var(--dark-teal);
+}
+
+.usp-wordmark-name {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.footer-attribution {
+    color: var(--text-main);
+    max-width: 46rem;
+}
+
+.footer-link {
+    color: var(--text-muted);
+    text-decoration: none;
+    font-size: 0.88rem;
+    display: inline-flex;
+    align-items: center;
+}
+
+.footer-link:hover {
+    color: var(--dark-teal);
+}
+
+.footer-icon {
+    height: 18px;
+    width: auto;
+    margin-right: 0.5rem;
+}
+
+/* ==================================================================
+   Genome browser: hide residual eukaryotic intron controls (TASK-09)
+   The flattened annotation removes the intron options themselves; these
+   rules cover any control the bundled JBrowse build still renders.
+   ================================================================== */
+/* JBrowse renders its dialogs in a portal at body level, so this rule is
+   intentionally global rather than scoped to the browser container. */
+[data-tbdashboard-hidden="intron"] {
+    display: none !important;
+}
+
+/* ==================================================================
+   Responsive adjustments
+   ================================================================== */
+@media (max-width: 991.98px) {
+    .lab-logo {
+        height: 46px;
+    }
+
+    .navbar-brand-text {
+        font-size: 1.1rem;
+    }
+
+    .cite-btn {
+        margin-top: 0.5rem;
+    }
+}
+
+@media (max-width: 575.98px) {
+    .hero-section {
+        padding: 1.5rem 0;
+    }
+
+    .search-input {
+        font-size: 0.95rem;
+        padding: 0.65rem 0.9rem;
+    }
+
+    .footer-lab-logo {
+        height: 40px;
+    }
+
+    .usp-wordmark {
+        border-left: none;
+        padding-left: 0;
+    }
+}
+
+/* ==================================================================
+   Landing state
+   ================================================================== */
+.welcome-panel {
+    margin-top: -1rem;
+}
+
+.welcome-card {
+    background: var(--white);
+    border: 1px solid var(--border-color);
+    border-radius: 14px;
+    padding: 1.25rem;
+    height: 100%;
+}
+
+.welcome-icon {
+    font-size: 1.35rem;
+    color: var(--primary-teal);
+    display: block;
+    margin-bottom: 0.6rem;
+}
+
+.welcome-chip {
+    background: rgba(156, 203, 203, 0.18) !important;
+    border: 1px solid transparent !important;
+    border-radius: 8px !important;
+    padding: 0.2rem 0.6rem;
+}
+
+.welcome-chip:hover {
+    border-color: var(--primary-teal) !important;
+    background: rgba(156, 203, 203, 0.32) !important;
+}
+
+.welcome-example {
+    color: var(--dark-teal);
+    font-size: 0.85rem;
+}
+
+.welcome-note {
+    background: var(--white);
+    border: 1px solid var(--border-color);
+    border-left: 3px solid var(--secondary-teal);
+    border-radius: 12px;
+    padding: 1rem 1.25rem;
 }

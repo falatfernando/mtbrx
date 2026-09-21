@@ -1,14 +1,43 @@
 """
 Data loading and parsing utilities for TB Dashboard.
 Handles GFF3, catalogue master file, and genomic coordinates.
+
+*Mycobacterium tuberculosis* is a prokaryote: it has no splicing and no
+introns, so a coding sequence (CDS) is equivalent to its gene. The annotation
+is therefore flattened to a single gene-level feature per locus before it
+reaches the genome browser (see :meth:`DataLoader.get_prokaryotic_gff3_path`).
 """
-import pandas as pd
-import gffutils
 import os
-import sqlite3
+import re
 import threading
-from typing import Dict, List, Optional, Tuple
+import urllib.parse
 from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
+
+import gffutils
+import pandas as pd
+
+# Gene-level feature types in the H37Rv RefSeq annotation.
+GENE_FEATURE_TYPES = ("gene", "pseudogene")
+
+# WHO confidence gradings, in catalogue order.
+CONFIDENCE_GRADES = (
+    "1) Assoc w R",
+    "2) Assoc w R - Interim",
+    "3) Uncertain significance",
+    "4) Not assoc w R - Interim",
+    "5) Not assoc w R",
+)
+
+# Optional WHO catalogue metadata columns surfaced in the resistance table
+# (TASK-12). Keys are the column ids in the master file.
+RELAXED_THRESHOLDS_COLUMN = (
+    "Relaxed thresholds simulation "
+    "(BDQ_Rv0678, CFZ_Rv0678, INH_katG, DLM_ddn/fbiA/fbiB/fbiC/fgd1/Rv2983)"
+)
+
+# First-line drugs are listed before the rest in the Browse by Drug module.
+FIRST_LINE_DRUGS = ("Isoniazid", "Rifampicin", "Pyrazinamide", "Ethambutol")
 
 
 @dataclass
@@ -22,6 +51,24 @@ class GeneInfo:
     strand: str
     product: str
     chromosome: str
+    note: str = ""
+    biotype: str = ""
+    cds_length: Optional[int] = None
+    protein_length: Optional[int] = None
+
+    @property
+    def length(self) -> int:
+        """Genomic span of the gene in base pairs."""
+        return self.end - self.start + 1
+
+    @property
+    def display_name(self) -> str:
+        """Gene symbol when available, otherwise the locus tag."""
+        return self.gene_name or self.locus_tag
+
+    @property
+    def is_protein_coding(self) -> bool:
+        return self.biotype == "protein_coding"
 
 
 @dataclass
@@ -42,43 +89,79 @@ class MutationInfo:
     confidence: Optional[str]
 
 
+def _parse_gff_attributes(raw: str) -> Dict[str, str]:
+    """Parse a GFF3 attribute column into a dict with values unescaped."""
+    attributes: Dict[str, str] = {}
+    for chunk in raw.strip().rstrip(";").split(";"):
+        if not chunk or "=" not in chunk:
+            continue
+        key, _, value = chunk.partition("=")
+        attributes[key.strip()] = urllib.parse.unquote(value.strip())
+    return attributes
+
+
+def protein_length_from_cds(cds_length: Optional[int]) -> Optional[int]:
+    """
+    Amino acid count for a CDS, excluding the termination codon (TASK-06).
+
+    ``L_aa = (L_bp - 3) // 3``
+    """
+    if not cds_length or cds_length < 6:
+        return None
+    return (cds_length - 3) // 3
+
+
 class DataLoader:
     """Load and parse TB genomic data files."""
-    
+
     def __init__(self, data_dir: str = "data"):
         self.data_dir = data_dir
         self.gff3_path = os.path.join(data_dir, "h37rv.gff3")
+        self.prokaryotic_gff3_path = os.path.join(data_dir, "h37rv.prokaryote.gff3")
         self.catalogue_path = os.path.join(data_dir, "catalogue_master_file.txt")
         self.genomic_coords_path = os.path.join(data_dir, "genomic_coordinates.txt")
         self.fasta_path = os.path.join(data_dir, "h37rv.fasta")
         self.fai_path = os.path.join(data_dir, "h37rv.fasta.fai")
-        
+
         self.gene_db: Optional[gffutils.Database] = None
         self.genes_cache: Dict[str, GeneInfo] = {}
         self.catalogue_df: Optional[pd.DataFrame] = None
         self.genomic_coords_df: Optional[pd.DataFrame] = None
-        
+
+        # Gene index, built once from the GFF3 text (see _load_gene_index).
+        self._genes_by_locus: Dict[str, GeneInfo] = {}
+        self._genes_by_name: Dict[str, GeneInfo] = {}
+        self._genes_sorted: List[GeneInfo] = []
+        self._index_lock = threading.Lock()
+
+        # Catalogue lookups, built lazily from the master file.
+        self._catalogue_alias_map: Optional[Dict[str, str]] = None
+        self._fasta = None
+
+    # ------------------------------------------------------------------
+    # GFF3 / gene annotation
+    # ------------------------------------------------------------------
     def get_gene_db(self) -> gffutils.Database:
         """Get gene database, ensuring thread safety for SQLite."""
         db_path = self.gff3_path + ".db"
-        
+
         # In Dash/Flask, multiple threads access this data.
         # SQLite connections can't be shared across threads.
         # We'll create a new connection if needed.
         if not hasattr(self, '_thread_local_db'):
             self._thread_local_db = threading.local()
-        
+
         if not hasattr(self._thread_local_db, 'db'):
             if not os.path.exists(db_path):
                 self.load_gff3()
             self._thread_local_db.db = gffutils.FeatureDB(db_path, keep_order=True)
-        
+
         return self._thread_local_db.db
 
     def load_gff3(self) -> gffutils.Database:
         """Load GFF3 file and create gene database."""
         db_path = self.gff3_path + ".db"
-        
+
         # Create database if it doesn't exist
         if not os.path.exists(db_path):
             self.gene_db = gffutils.create_db(
@@ -89,140 +172,505 @@ class DataLoader:
                 merge_strategy='merge',
                 sort_attribute_values=True
             )
-        
+
+        self._load_gene_index()
+
         # For the current thread, initialize the DB
         return self.get_gene_db()
-    
+
+    def _load_gene_index(self) -> None:
+        """
+        Build an in-memory index of every gene-level feature in the GFF3.
+
+        Reading the annotation once up front replaces a full SQLite scan per
+        lookup and gives every gene its product, functional note and CDS
+        length, which the overview card, tooltips and the neighbourhood track
+        all need.
+        """
+        if self._genes_sorted:
+            return
+
+        with self._index_lock:
+            if self._genes_sorted:
+                return
+
+            genes: Dict[str, GeneInfo] = {}
+            cds_spans: Dict[str, int] = {}
+            cds_products: Dict[str, str] = {}
+            cds_notes: Dict[str, str] = {}
+
+            with open(self.gff3_path, "r", encoding="utf-8") as handle:
+                for line in handle:
+                    if line.startswith("#"):
+                        continue
+                    fields = line.rstrip("\n").split("\t")
+                    if len(fields) < 9:
+                        continue
+
+                    seqid, _, feature_type, start, end = fields[0], fields[1], fields[2], fields[3], fields[4]
+                    strand, attributes_raw = fields[6], fields[8]
+
+                    if feature_type not in GENE_FEATURE_TYPES and feature_type != "CDS":
+                        continue
+
+                    attributes = _parse_gff_attributes(attributes_raw)
+                    locus_tag = attributes.get("locus_tag", "")
+                    if not locus_tag:
+                        continue
+
+                    if feature_type == "CDS":
+                        # A bacterial gene has a single CDS, but summing the
+                        # spans keeps the arithmetic correct either way.
+                        cds_spans[locus_tag] = cds_spans.get(locus_tag, 0) + (
+                            int(end) - int(start) + 1
+                        )
+                        if attributes.get("product"):
+                            cds_products.setdefault(locus_tag, attributes["product"])
+                        if attributes.get("Note"):
+                            cds_notes.setdefault(locus_tag, attributes["Note"])
+                        continue
+
+                    genes[locus_tag] = GeneInfo(
+                        gene_id=attributes.get("ID", ""),
+                        gene_name=attributes.get("Name") or attributes.get("gene") or locus_tag,
+                        locus_tag=locus_tag,
+                        start=int(start),
+                        end=int(end),
+                        strand=strand,
+                        product="",
+                        chromosome=seqid,
+                        note=attributes.get("Note", ""),
+                        biotype=attributes.get("gene_biotype", ""),
+                    )
+
+            for locus_tag, gene in genes.items():
+                gene.product = cds_products.get(locus_tag, "")
+                if not gene.note:
+                    gene.note = cds_notes.get(locus_tag, "")
+                gene.cds_length = cds_spans.get(locus_tag)
+                gene.protein_length = protein_length_from_cds(gene.cds_length)
+
+                self._genes_by_locus[locus_tag.lower()] = gene
+                # Locus tags win over symbols on collision, so a symbol never
+                # shadows a real gene ID.
+                self._genes_by_name.setdefault(gene.gene_name.lower(), gene)
+
+            self._genes_sorted = sorted(genes.values(), key=lambda g: (g.chromosome, g.start))
+
     def get_gene_info(self, gene_name: str) -> Optional[GeneInfo]:
         """Get gene information by name or locus tag."""
-        if gene_name in self.genes_cache:
-            return self.genes_cache[gene_name]
-        
-        db = self.get_gene_db()
-        
-        # Try searching by gene name
+        if not gene_name:
+            return None
+
+        token = str(gene_name).strip()
+        if token in self.genes_cache:
+            return self.genes_cache[token]
+
+        self._load_gene_index()
+        key = token.lower()
+        gene_info = self._genes_by_locus.get(key) or self._genes_by_name.get(key)
+
+        if gene_info:
+            self.genes_cache[token] = gene_info
+        return gene_info
+
+    def is_known_gene(self, token: str) -> bool:
+        """True when the token is an annotated gene symbol or locus tag."""
+        return self.get_gene_info(token) is not None
+
+    def search_genes(self, query: str) -> List[GeneInfo]:
+        """Search for genes by name or locus tag (partial match)."""
+        if not query:
+            return []
+
+        self._load_gene_index()
+        needle = str(query).strip().lower()
+
+        exact = [
+            gene for gene in self._genes_sorted
+            if gene.gene_name.lower() == needle or gene.locus_tag.lower() == needle
+        ]
+        partial = [
+            gene for gene in self._genes_sorted
+            if gene not in exact
+            and (needle in gene.gene_name.lower() or needle in gene.locus_tag.lower())
+        ]
+        return exact + partial
+
+    def get_genes_in_window(
+        self, start: int, end: int, chromosome: Optional[str] = None
+    ) -> List[GeneInfo]:
+        """Every gene-level feature overlapping a genomic window."""
+        self._load_gene_index()
+        return [
+            gene for gene in self._genes_sorted
+            if gene.end >= start
+            and gene.start <= end
+            and (chromosome is None or gene.chromosome == chromosome)
+        ]
+
+    def get_neighbor_genes(
+        self, gene_info: GeneInfo
+    ) -> Tuple[Optional[GeneInfo], Optional[GeneInfo]]:
+        """The gene immediately upstream and downstream in genomic order."""
+        self._load_gene_index()
+        same_contig = [g for g in self._genes_sorted if g.chromosome == gene_info.chromosome]
         try:
-            genes = list(db.features_of_type('gene'))
-            for gene in genes:
-                name = gene.attributes.get('Name', [''])[0]
-                locus = gene.attributes.get('locus_tag', [''])[0]
-                
-                if name == gene_name or locus == gene_name:
-                    # Get product from CDS
-                    product = ""
-                    cds = next(db.children(gene, featuretype='CDS'), None)
-                    if cds:
-                        product = cds.attributes.get('product', [''])[0]
-                    
-                    gene_info = GeneInfo(
-                        gene_id=gene.id,
-                        gene_name=name,
-                        locus_tag=locus,
-                        start=gene.start,
-                        end=gene.end,
-                        strand=gene.strand,
-                        product=product,
-                        chromosome=gene.seqid
-                    )
-                    self.genes_cache[gene_name] = gene_info
-                    return gene_info
-        except Exception as e:
-            print(f"Error finding gene {gene_name}: {e}")
-        
-        return None
-    
+            position = next(
+                i for i, g in enumerate(same_contig) if g.locus_tag == gene_info.locus_tag
+            )
+        except StopIteration:
+            return None, None
+
+        previous = same_contig[position - 1] if position > 0 else None
+        following = same_contig[position + 1] if position + 1 < len(same_contig) else None
+        return previous, following
+
+    def get_prokaryotic_gff3_path(self) -> str:
+        """
+        Path to a flattened, prokaryote-appropriate copy of the annotation.
+
+        The RefSeq GFF3 nests a CDS inside every gene, which makes the genome
+        browser render each locus twice and offer eukaryotic intron controls
+        for sequence retrieval. For a bacterium the CDS *is* the gene, so the
+        browser is given one gene-level feature per locus with the product and
+        functional note merged in, and no subfeatures at all (TASK-09).
+        """
+        self._load_gene_index()
+
+        source_mtime = os.path.getmtime(self.gff3_path)
+        if (
+            os.path.exists(self.prokaryotic_gff3_path)
+            and os.path.getmtime(self.prokaryotic_gff3_path) >= source_mtime
+        ):
+            return self.prokaryotic_gff3_path
+
+        sequence_regions = []
+        with open(self.gff3_path, "r", encoding="utf-8") as handle:
+            for line in handle:
+                if not line.startswith("#"):
+                    break
+                if line.startswith("##sequence-region"):
+                    sequence_regions.append(line.rstrip("\n"))
+
+        tmp_path = self.prokaryotic_gff3_path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as out:
+            out.write("##gff-version 3\n")
+            out.write("#!note flattened gene/CDS hierarchy for prokaryotic display\n")
+            for region in sequence_regions:
+                out.write(region + "\n")
+
+            for gene in self._genes_sorted:
+                attributes = [
+                    f"ID={gene.locus_tag}",
+                    f"Name={gene.display_name}",
+                    f"locus_tag={gene.locus_tag}",
+                ]
+                if gene.gene_name and gene.gene_name != gene.locus_tag:
+                    attributes.append(f"gene={_gff_escape(gene.gene_name)}")
+                if gene.product:
+                    attributes.append(f"product={_gff_escape(gene.product)}")
+                if gene.note:
+                    attributes.append(f"Note={_gff_escape(gene.note)}")
+                if gene.biotype:
+                    attributes.append(f"gene_biotype={gene.biotype}")
+                if gene.protein_length:
+                    attributes.append(f"protein_length={gene.protein_length}")
+
+                out.write(
+                    "\t".join([
+                        gene.chromosome,
+                        "TBDashboard",
+                        "gene",
+                        str(gene.start),
+                        str(gene.end),
+                        ".",
+                        gene.strand,
+                        ".",
+                        ";".join(attributes),
+                    ]) + "\n"
+                )
+
+        os.replace(tmp_path, self.prokaryotic_gff3_path)
+        return self.prokaryotic_gff3_path
+
+    # ------------------------------------------------------------------
+    # Reference sequence
+    # ------------------------------------------------------------------
+    def get_sequence(self, start: int, end: int, chromosome: Optional[str] = None) -> str:
+        """Reference sequence for a 1-based inclusive genomic interval."""
+        if self._fasta is None:
+            import pyfaidx
+
+            self._fasta = pyfaidx.Fasta(self.fasta_path)
+
+        contig = chromosome or next(iter(self._fasta.keys()))
+        start = max(1, int(start))
+        end = min(len(self._fasta[contig]), int(end))
+        if end < start:
+            return ""
+        return str(self._fasta[contig][start - 1:end]).upper()
+
+    def get_gene_sequence(
+        self, gene_info: GeneInfo, flank: int = 0, reverse_complement: bool = True
+    ) -> str:
+        """
+        Coding sequence of a gene, optionally with symmetric flanks.
+
+        With ``reverse_complement`` the sequence is returned in the gene's own
+        orientation, so a minus-strand gene reads 5'->3' from its start codon.
+        """
+        sequence = self.get_sequence(
+            gene_info.start - flank, gene_info.end + flank, gene_info.chromosome
+        )
+        if reverse_complement and gene_info.strand == "-":
+            sequence = _reverse_complement(sequence)
+        return sequence
+
+    def translate_gene(self, gene_info: GeneInfo) -> Optional[str]:
+        """Protein translation of a protein-coding gene (bacterial code 11)."""
+        if not gene_info.is_protein_coding:
+            return None
+
+        from Bio.Seq import Seq
+
+        cds = self.get_gene_sequence(gene_info)
+        usable = len(cds) - (len(cds) % 3)
+        if usable < 3:
+            return None
+        return str(Seq(cds[:usable]).translate(table=11, to_stop=False))
+
+    # ------------------------------------------------------------------
+    # WHO catalogue
+    # ------------------------------------------------------------------
     def load_catalogue(self) -> pd.DataFrame:
         """Load catalogue master file."""
         if self.catalogue_df is None:
-            self.catalogue_df = pd.read_csv(
-                self.catalogue_path,
-                sep='\t',
-                dtype=str
+            catalogue = pd.read_csv(self.catalogue_path, sep='\t', dtype=str)
+            # The master file repeats the "CHANGES vs ver1" header; pandas
+            # disambiguates the second one and it carries unrelated numeric
+            # codes, so it is dropped to keep the schema unambiguous.
+            catalogue = catalogue.drop(
+                columns=[c for c in catalogue.columns if re.fullmatch(r"CHANGES vs ver1\.\d+", c)]
             )
+            self.catalogue_df = catalogue
         return self.catalogue_df
-    
+
     def load_genomic_coordinates(self) -> pd.DataFrame:
         """Load genomic coordinates file."""
         if self.genomic_coords_df is None:
-            self.genomic_coords_df = pd.read_csv(
-                self.genomic_coords_path,
-                sep='\t',
-                dtype=str
-            )
+            coords = pd.read_csv(self.genomic_coords_path, sep='\t', dtype=str)
+            # Pre-split the gene prefix so per-gene lookups are a cheap
+            # equality test rather than a string scan over 145k rows.
+            coords["gene"] = coords["variant"].str.split("_", n=1).str[0]
+            self.genomic_coords_df = coords
         return self.genomic_coords_df
-    
-    def get_drug_resistance_info(self, gene_name: str, mutation: Optional[str] = None) -> pd.DataFrame:
+
+    def _build_catalogue_aliases(self) -> Dict[str, str]:
+        """
+        Map every identifier of a catalogue gene to its catalogue spelling.
+
+        Built from the annotation rather than a hand-maintained list, so all
+        catalogue genes resolve from either their symbol or their locus tag.
+        """
+        if self._catalogue_alias_map is not None:
+            return self._catalogue_alias_map
+
+        catalogue = self.load_catalogue()
+        aliases: Dict[str, str] = {}
+
+        for catalogue_gene in catalogue["gene"].dropna().unique():
+            aliases[catalogue_gene.lower()] = catalogue_gene
+
+            gene_info = self.get_gene_info(catalogue_gene)
+            if gene_info:
+                aliases[gene_info.gene_name.lower()] = catalogue_gene
+                aliases[gene_info.locus_tag.lower()] = catalogue_gene
+
+        self._catalogue_alias_map = aliases
+        return aliases
+
+    def resolve_catalogue_gene(self, gene_token: str) -> Optional[str]:
+        """Catalogue spelling for a gene symbol or locus tag, if catalogued."""
+        if not gene_token:
+            return None
+        aliases = self._build_catalogue_aliases()
+        return aliases.get(str(gene_token).strip().lower())
+
+    def is_gene_in_catalogue(self, gene_info: GeneInfo) -> bool:
+        """Whether a gene has any entry in the WHO catalogue (TASK-05)."""
+        if gene_info is None:
+            return False
+        return bool(
+            self.resolve_catalogue_gene(gene_info.locus_tag)
+            or self.resolve_catalogue_gene(gene_info.gene_name)
+        )
+
+    def get_drug_resistance_info(
+        self, gene_name: str, mutation: Optional[str] = None
+    ) -> pd.DataFrame:
         """Get drug resistance information for a gene/mutation."""
         catalogue = self.load_catalogue()
-        
-        # Gene synonyms mapping (Catalogue name -> GFF3 names/locus_tags)
-        # Verified against H37Rv GFF3
-        synonyms = {
-            "gyrB": ["Rv0005", "gyrB"],
-            "gyrA": ["Rv0006", "gyrA"],
-            "fgd1": ["Rv0407", "fgd1"],
-            "rpoB": ["Rv0667", "rpoB"],
-            "mmpL5": ["Rv0676c", "mmpL5"],
-            "mmpS5": ["Rv0677c", "mmpS5"],
-            "Rv0678": ["Rv0678"],
-            "rpsL": ["Rv0682", "rpsL"],
-            "fbiC": ["Rv1173", "fbiC"],
-            "atpE": ["Rv1305", "atpE"],
-            "rrs": ["Rvnr01", "rrs"],
-            "fabG1": ["Rv1483", "fabG1"],
-            "inhA": ["Rv1484", "inhA"],
-            "katG": ["Rv1908c", "katG"],
-            "pncA": ["Rv2043c", "pncA"],
-            "eis": ["Rv2416c", "eis"],
-            "ahpC": ["Rv2428", "ahpC"],
-            "fbiA": ["Rv3261", "fbiA"],
-            "fbiB": ["Rv3262", "fbiB"],
-            "ddn": ["Rv3547", "ddn"],
-            "embB": ["Rv3795", "embB"],
-            "ethA": ["Rv3854c", "ethA"]
-        }
-        
-        # Determine which catalogue 'gene' to look for
-        search_genes = [gene_name.lower()]
-        for cat_name, syn_list in synonyms.items():
-            if gene_name.lower() in [s.lower() for s in syn_list]:
-                if cat_name.lower() not in search_genes:
-                    search_genes.append(cat_name.lower())
-                for s in syn_list:
-                    if s.lower() not in search_genes:
-                        search_genes.append(s.lower())
 
-        # Filter by gene
-        mask = catalogue['gene'].str.lower().isin(search_genes)
-        
+        catalogue_gene = self.resolve_catalogue_gene(gene_name)
+        if catalogue_gene is None:
+            return catalogue.iloc[0:0].copy()
+
+        mask = catalogue['gene'] == catalogue_gene
+
         if mutation:
-            # mutation might be a full variant like "Rv0678_p.Asp47fs" 
+            # mutation might be a full variant like "Rv0678_p.Asp47fs"
             # or just the mutation part like "p.Asp47fs"
-            mutation_lower = mutation.lower()
-            
+            mutation_lower = str(mutation).lower()
+
             # 1. Try matching full variant in the 'variant' column
             variant_mask = mask & (catalogue['variant'].str.lower() == mutation_lower)
-            
+
             # 2. Try matching mutation part in the 'mutation' column
             mut_part = mutation_lower
             if '_' in mutation_lower:
                 mut_part = mutation_lower.split('_', 1)[1]
-            
+
             mutation_column_mask = mask & (catalogue['mutation'].str.lower() == mut_part)
-            
-            # 3. Special case for LoF
+
+            # 3. Accept the mutation with or without its "p."/"c." prefix.
+            bare = re.sub(r"^[pcn]\.", "", mut_part)
+            prefixed_mask = mask & catalogue['mutation'].str.lower().isin(
+                {bare, f"p.{bare}", f"c.{bare}", f"n.{bare}"}
+            )
+
+            final_mask = variant_mask | mutation_column_mask | prefixed_mask
+
+            # 4. Special case for LoF
             if "lof" in mutation_lower:
-                lof_mask = mask & (catalogue['mutation'].str.lower() == "lof")
-                final_mask = variant_mask | mutation_column_mask | lof_mask
-            else:
-                final_mask = variant_mask | mutation_column_mask
-                
-            result = catalogue[final_mask].copy()
-            return result
-        
-        result = catalogue[mask].copy()
-        return result
-    
+                final_mask = final_mask | (mask & (catalogue['mutation'].str.lower() == "lof"))
+
+            return catalogue[final_mask].copy()
+
+        return catalogue[mask].copy()
+
+    def get_drug_gene_map(self) -> Dict[str, List[Dict]]:
+        """
+        Drugs mapped to their catalogue genes, for the Browse by Drug module.
+
+        Each entry carries the gene's catalogue spelling, its locus tag and the
+        number of distinct catalogued mutations for that drug/gene pair.
+        """
+        catalogue = self.load_catalogue()
+        grouped = (
+            catalogue.dropna(subset=["drug", "gene"])
+            .groupby(["drug", "gene"])["mutation"]
+            .nunique()
+            .reset_index(name="variant_count")
+        )
+
+        drug_map: Dict[str, List[Dict]] = {}
+        for drug, rows in grouped.groupby("drug"):
+            entries = []
+            for _, row in rows.sort_values("gene", key=lambda s: s.str.lower()).iterrows():
+                gene_info = self.get_gene_info(row["gene"])
+                entries.append({
+                    "gene": row["gene"],
+                    "locus_tag": gene_info.locus_tag if gene_info else "",
+                    "variant_count": int(row["variant_count"]),
+                })
+            drug_map[drug] = entries
+
+        # First-line drugs first, then the remainder alphabetically.
+        ordered = [d for d in FIRST_LINE_DRUGS if d in drug_map]
+        ordered += sorted(d for d in drug_map if d not in FIRST_LINE_DRUGS)
+        return {drug: drug_map[drug] for drug in ordered}
+
+    def get_catalogue_summary(self) -> pd.DataFrame:
+        """
+        Per-gene summary of the WHO catalogue (TASK-14).
+
+        A catalogue row is a drug/gene/mutation association, so mutations are
+        counted as distinct values rather than as rows; both figures are
+        reported because they answer different questions.
+        """
+        catalogue = self.load_catalogue()
+        records = []
+
+        for catalogue_gene, rows in catalogue.dropna(subset=["gene"]).groupby("gene"):
+            gene_info = self.get_gene_info(catalogue_gene)
+            mutations = rows["mutation"].dropna()
+            grades = rows["FINAL CONFIDENCE GRADING"].fillna("")
+
+            record = {
+                "Gene": catalogue_gene,
+                "Locus tag": gene_info.locus_tag if gene_info else "",
+                "Drugs": ", ".join(sorted(rows["drug"].dropna().unique())),
+                "Drug count": int(rows["drug"].nunique()),
+                "Variants": int(mutations.nunique()),
+                "Associations": int(len(rows)),
+                "Tier 1": int((rows["tier"] == "1").sum()),
+                "Tier 2": int((rows["tier"] == "2").sum()),
+                "LoF": int(
+                    mutations[
+                        mutations.str.contains("lof", case=False, na=False)
+                    ].nunique()
+                ),
+            }
+            for grade in CONFIDENCE_GRADES:
+                record[grade] = int((grades == grade).sum())
+            records.append(record)
+
+        summary = pd.DataFrame(records)
+        if summary.empty:
+            return summary
+        return summary.sort_values("Variants", ascending=False).reset_index(drop=True)
+
+    def get_drug_summary(self) -> pd.DataFrame:
+        """Per-drug summary of the WHO catalogue (TASK-14)."""
+        catalogue = self.load_catalogue()
+        records = []
+
+        for drug, rows in catalogue.dropna(subset=["drug"]).groupby("drug"):
+            grades = rows["FINAL CONFIDENCE GRADING"].fillna("")
+            record = {
+                "Drug": drug,
+                "Genes": int(rows["gene"].nunique()),
+                "Variants": int(rows["variant"].nunique()),
+                "Associations": int(len(rows)),
+                "Tier 1": int((rows["tier"] == "1").sum()),
+                "Tier 2": int((rows["tier"] == "2").sum()),
+            }
+            for grade in CONFIDENCE_GRADES:
+                record[grade] = int((grades == grade).sum())
+            records.append(record)
+
+        summary = pd.DataFrame(records)
+        if summary.empty:
+            return summary
+
+        order = {drug: i for i, drug in enumerate(FIRST_LINE_DRUGS)}
+        summary["_order"] = summary["Drug"].map(lambda d: order.get(d, len(order)))
+        return (
+            summary.sort_values(["_order", "Drug"])
+            .drop(columns="_order")
+            .reset_index(drop=True)
+        )
+
+    def get_catalogue_totals(self) -> Dict[str, int]:
+        """Headline catalogue counts for the summary view."""
+        catalogue = self.load_catalogue()
+        grades = catalogue["FINAL CONFIDENCE GRADING"].fillna("")
+        totals = {
+            "genes": int(catalogue["gene"].nunique()),
+            "drugs": int(catalogue["drug"].nunique()),
+            "variants": int(catalogue["variant"].nunique()),
+            "associations": int(len(catalogue)),
+            "tier_1": int((catalogue["tier"] == "1").sum()),
+            "tier_2": int((catalogue["tier"] == "2").sum()),
+        }
+        for grade in CONFIDENCE_GRADES:
+            totals[grade] = int((grades == grade).sum())
+        return totals
+
+    # ------------------------------------------------------------------
+    # Coordinates
+    # ------------------------------------------------------------------
     def calculate_relative_position(self, genomic_position: int, gene_info: GeneInfo) -> int:
         """
         Calculate position relative to gene start.
@@ -233,7 +681,7 @@ class DataLoader:
             return genomic_position - gene_info.start
         else:
             return gene_info.end - genomic_position
-    
+
     def calculate_genomic_position(self, relative_position: int, gene_info: GeneInfo) -> int:
         """
         Calculate genomic position from gene-relative position.
@@ -244,74 +692,49 @@ class DataLoader:
             return gene_info.start + relative_position
         else:
             return gene_info.end - relative_position
-    
+
     def search_mutations_by_gene(self, gene_name: str) -> pd.DataFrame:
         """Search for all mutations related to a gene."""
         genomic_coords = self.load_genomic_coordinates()
-        
-        # Extract gene name from variant column (e.g., "dnaA_p.Asp3Ala" -> "dnaA")
-        mask = genomic_coords['variant'].str.startswith(gene_name + '_')
-        result = genomic_coords[mask].copy()
-        
-        return result
-    
+
+        # Variants are prefixed with the catalogue spelling of the gene, so a
+        # locus-tag search has to be translated first.
+        catalogue_gene = self.resolve_catalogue_gene(gene_name) or gene_name
+        return genomic_coords[genomic_coords["gene"] == catalogue_gene].copy()
+
+    def get_variant_coordinates(self, variant: str) -> pd.DataFrame:
+        """Every nucleotide change recorded for one variant identifier."""
+        genomic_coords = self.load_genomic_coordinates()
+        return genomic_coords[genomic_coords["variant"] == variant].copy()
+
     def get_mutation_details(self, variant: str) -> Dict:
         """Get detailed information about a specific mutation."""
         genomic_coords = self.load_genomic_coordinates()
         catalogue = self.load_catalogue()
-        
+
         # Find in genomic coordinates
-        gc_mask = genomic_coords['variant'] == variant
-        gc_result = genomic_coords[gc_mask]
-        
+        gc_result = genomic_coords[genomic_coords['variant'] == variant]
+
         # Find in catalogue
-        cat_mask = catalogue['mutation'] == variant
-        cat_result = catalogue[cat_mask]
-        
+        cat_result = catalogue[catalogue['variant'] == variant]
+
         return {
             'genomic_coordinates': gc_result.to_dict('records') if len(gc_result) > 0 else [],
             'catalogue': cat_result.to_dict('records') if len(cat_result) > 0 else []
         }
-    
-    def search_genes(self, query: str) -> List[GeneInfo]:
-        """Search for genes by name (partial match)."""
-        db = self.get_gene_db()
-        
-        results = []
-        query_lower = query.lower()
-        
-        genes = list(db.features_of_type('gene'))
-        for gene in genes:
-            name = gene.attributes.get('Name', [''])[0]
-            locus = gene.attributes.get('locus_tag', [''])[0]
-            
-            if query_lower in name.lower() or query_lower in locus.lower():
-                product = ""
-                cds = next(db.children(gene, featuretype='CDS'), None)
-                if cds:
-                    product = cds.attributes.get('product', [''])[0]
-                
-                gene_info = GeneInfo(
-                    gene_id=gene.id,
-                    gene_name=name,
-                    locus_tag=locus,
-                    start=gene.start,
-                    end=gene.end,
-                    strand=gene.strand,
-                    product=product,
-                    chromosome=gene.seqid
-                )
-                results.append(gene_info)
-        
-        return results
-    
+
+    # ------------------------------------------------------------------
+    # Genome browser configuration
+    # ------------------------------------------------------------------
     def get_jbrowse_config(self, region: str = None, start: int = None, end: int = None) -> dict:
         """Generate JBrowse 2 configuration with relative URLs."""
         # Use relative URLs that the Flask app will serve
         fasta_url = "/data/h37rv.fasta"
         fai_url = "/data/h37rv.fasta.fai"
-        gff3_url = "/data/h37rv.gff3"
-        
+        # Flattened annotation: one feature per locus, no CDS subfeatures and
+        # therefore no intron controls anywhere in the browser (TASK-09).
+        gff3_url = "/data/" + os.path.basename(self.get_prokaryotic_gff3_path())
+
         assembly = {
             "name": "H37Rv NC_000962.3",
             "sequence": {
@@ -328,12 +751,12 @@ class DataLoader:
                 }
             }
         }
-        
+
         tracks = [
             {
                 "type": "FeatureTrack",
                 "trackId": "genes",
-                "name": "Genes (GFF3)",
+                "name": "Genes / CDS (H37Rv)",
                 "assemblyNames": ["H37Rv NC_000962.3"],
                 "adapter": {
                     "type": "Gff3Adapter",
@@ -343,7 +766,7 @@ class DataLoader:
                 }
             }
         ]
-        
+
         return {
             "assembly": assembly,
             "tracks": tracks,
@@ -375,3 +798,21 @@ class DataLoader:
                 }
             }
         }
+
+
+def _gff_escape(value: str) -> str:
+    """
+    Escape a value for use inside a GFF3 attribute field.
+
+    ``,``, ``;``, ``=``, ``&`` and ``%`` carry structural meaning in the GFF3
+    attribute column, so they must stay percent-encoded — a product name such
+    as "KatG,catalase-peroxidase" would otherwise be read as two values.
+    """
+    return urllib.parse.quote(str(value), safe=" ()[]{}<>/'+*:.-_")
+
+
+_COMPLEMENT = str.maketrans("ACGTNacgtn", "TGCANtgcan")
+
+
+def _reverse_complement(sequence: str) -> str:
+    return sequence.translate(_COMPLEMENT)[::-1]

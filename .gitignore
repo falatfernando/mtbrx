@@ -32,3 +32,11 @@ ENV/
 # OS
 .DS_Store
 Thumbs.db
+
+# Generated data artefacts
+# (h37rv.gff3.db is tracked deliberately; the flattened annotation is derived
+#  from h37rv.gff3 at start-up and does not belong in version control.)
+data/h37rv.prokaryote.gff3
+
+# Test caches
+.pytest_cache/

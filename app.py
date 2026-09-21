@@ -1,16 +1,23 @@
 """
 TB Dashboard - A Dash application for visualizing TB genomic data and drug resistance.
 """
+import os
+from typing import Dict, List, Optional
+
 import dash
-from dash import html, dcc, Input, Output, State, callback_context, dash_table
 import dash_bootstrap_components as dbc
 import dash_jbrowse
 import pandas as pd
-from typing import Optional
-import os
+from dash import ALL, Input, Output, State, callback_context, dcc, html
+from dash.exceptions import PreventUpdate
+from flask import send_from_directory
 
-from data_utils import DataLoader
+import genome_view
+import layout as ui
+import search_utils
+import tables
 from coordinate_calculator import CoordinateCalculator
+from data_utils import DataLoader, GeneInfo
 
 # Get absolute path for data directory
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
@@ -20,10 +27,17 @@ data_loader = DataLoader(data_dir=DATA_DIR)
 data_loader.load_gff3()
 data_loader.load_catalogue()
 data_loader.load_genomic_coordinates()
+# Flattened annotation used by the genome browser (TASK-09).
+data_loader.get_prokaryotic_gff3_path()
 
 coord_calculator = CoordinateCalculator(data_loader)
 
-from flask import send_from_directory
+DRUG_GENE_MAP = data_loader.get_drug_gene_map()
+CATALOGUE_TOTALS = data_loader.get_catalogue_totals()
+
+# Like the coordinates table and the neighbourhood track, the analysis panel is
+# created only once a gene is loaded, so it carries a pattern-matching id.
+ANALYSIS_DISPLAY_ID = {"type": "analysis-display", "index": "main"}
 
 # Initialize Dash app
 app = dash.Dash(
@@ -37,194 +51,223 @@ app.title = "TB Dashboard | LaPAM"
 # Expose the Flask server for gunicorn
 server = app.server
 
+
 # Flask route to serve data files for JBrowse
 @server.route('/data/<path:path>')
 def serve_data(path):
     return send_from_directory(DATA_DIR, path)
 
-# Navigation Bar
-navbar = dbc.Navbar(
-    dbc.Container([
-        html.A(
-            dbc.Row([
-                dbc.Col(html.Img(src=app.get_asset_url("lapam.png"), className="lab-logo")),
-                dbc.Col(dbc.NavbarBrand("Genomic Resistance Explorer", className="navbar-brand-text")),
-            ], align="center", className="g-0"),
-            href="/",
-            style={"textDecoration": "none"},
-        ),
-        dbc.Nav([
-            # Standard text link
-            dbc.NavItem(dbc.NavLink("Home", href="/")),
-            
-            # Link with a custom image
-            dbc.NavItem(
-                dbc.NavLink(
-                    [
-                        html.Img(src=app.get_asset_url("code.png"), style={"height": "20px", "marginRight": "8px"}),
-                    ], 
-                    href="https://github.com/falatfernando/tbdashboard",
-                    target="_blank",
-                    className="d-flex align-items-center"
-                )
-            ),
-            
-            # Link with a custom image
-            dbc.NavItem(
-                dbc.NavLink(
-                    [
-                        html.Img(src=app.get_asset_url("github.png"), style={"height": "20px", "marginRight": "8px"}),
-                    ], 
-                    href="https://github.com/falatfernando", 
-                    target="_blank",
-                    className="d-flex align-items-center"
-                )
-            ),
-        ], className="ms-auto", navbar=True)
-    ], fluid=True),
-    className="navbar-custom sticky-top mb-0"
-)
 
 # App layout
 app.layout = html.Div([
+    # Active gene and mutation requested by the user, from any entry point.
+    dcc.Store(id="nav-store"),
     dcc.Store(id="current-gene-store"),
-    navbar,
-    
-    # Hero / Search Section
-    html.Div([
-        dbc.Container([
-            dbc.Row([
-                dbc.Col([
-                    html.H1([
-                        dbc.Badge("TB", className="badge-tb me-2"), 
-                        "Dashboard"
-                    ], className="display-5 fw-bold mb-3"),
-                    html.P(
-                        "Explore M. tuberculosis WHO catalogue mutations and visualize the genomic region with precision.",
-                        className="lead text-muted mb-5"
-                    ),
-                    
-                    # Modern Search Card
-                    dbc.Card([
-                        dbc.CardBody([
-                            dbc.InputGroup([
-                                dbc.Input(
-                                    id="search-input",
-                                    type="text",
-                                    placeholder="Search gene (e.g., rpoB) or mutation (e.g., katG_S315T)...",
-                                    className="search-input",
-                                    debounce=True
-                                ),
-                                dbc.Button(
-                                    html.I(className="bi bi-search me-2"),
-                                    id="search-button",
-                                    className="search-btn"
-                                )
-                            ]),
-                            html.Div([
-                                html.Span("Quick access: ", className="text-muted small me-2"),
-                                dbc.Button("rpoB", id="quick-rpoB", size="sm", className="quick-search-btn"),
-                                dbc.Button("gyrA", id="quick-gyrA", size="sm", className="quick-search-btn"),
-                                dbc.Button("katG", id="quick-katG", size="sm", className="quick-search-btn"),
-                            ], className="mt-3 d-flex align-items-center justify-content-center")
-                        ])
-                    ], className="search-card")
-                ], lg=8, className="mx-auto")
-            ])
-        ], className="py-5")
-    ], className="hero-section"),
-    
-    # Results Section
+    # Single source of truth for the selected variant, shared by the
+    # resistance table, the coordinates table and the analysis card.
+    dcc.Store(id="selection-store"),
+
+    ui.navbar(app),
+    ui.hero_search(),
+
     dbc.Container([
         dcc.Loading(
             id="loading-results",
             type="default",
-            children=html.Div(id="search-results-container")
+            children=html.Div(id="search-results-container"),
         ),
-        
-        # Footer
-        html.Footer([
-            dbc.Row([
-                dbc.Col([
-                    html.Hr(className="mb-4"),
-                    html.Div([
-                        html.Img(src=app.get_asset_url("lapam.png"), style={"height": "30px", "marginRight": "10px"}),
-                        html.Span("TB Dashboard v1.1 | Developed by Fernando Falat", className="fw-bold")
-                    ], className="d-flex align-items-center justify-content-center mb-3"),
-                    html.P([
-                        html.Strong("Data Sources: "),
-                        "H37Rv (NC_000962.3), WHO Catalogue of mutations in Mycobacterium tuberculosis complex and their association with drug resistance, 2nd ed. | Visualization powered by JBrowse 2."
-                    ], className="text-center small mb-0 text-muted")
-                ])
-            ])
-        ], className="footer")
-    ], fluid=False)
-    
+        ui.footer(app),
+    ], fluid=False),
+
+    ui.browse_by_drug_modal(DRUG_GENE_MAP),
+    ui.summary_modal(),
+    ui.cite_modal(),
 ])
 
 
-# Callbacks
+# ----------------------------------------------------------------------
+# Chrome: navbar collapse and modals
+# ----------------------------------------------------------------------
+@app.callback(
+    Output("navbar-collapse", "is_open"),
+    Input("navbar-toggler", "n_clicks"),
+    State("navbar-collapse", "is_open"),
+    prevent_initial_call=True,
+)
+def toggle_navbar(n_clicks, is_open):
+    return not is_open
+
+
+@app.callback(
+    Output("drugs-modal", "is_open"),
+    [Input("open-drugs-modal", "n_clicks"),
+     Input("close-drugs-modal", "n_clicks"),
+     Input({"type": "gene-link", "drug": ALL, "index": ALL}, "n_clicks")],
+    State("drugs-modal", "is_open"),
+    prevent_initial_call=True,
+)
+def toggle_drugs_modal(open_clicks, close_clicks, gene_clicks, is_open):
+    """Open from the header; close on explicit close or after picking a gene."""
+    triggered = callback_context.triggered_id
+    if triggered == "open-drugs-modal":
+        return True
+    return False
+
+
+@app.callback(
+    [Output("summary-modal", "is_open"),
+     Output("summary-modal-body", "children")],
+    [Input("open-summary-modal", "n_clicks"),
+     Input("close-summary-modal", "n_clicks")],
+    State("summary-modal", "is_open"),
+    prevent_initial_call=True,
+)
+def toggle_summary_modal(open_clicks, close_clicks, is_open):
+    """Build the summary tables on first open rather than at start-up."""
+    if callback_context.triggered_id == "open-summary-modal":
+        return True, tables.catalogue_summary_view(data_loader)
+    return False, dash.no_update
+
+
+@app.callback(
+    Output("cite-modal", "is_open"),
+    [Input("open-cite-modal", "n_clicks"),
+     Input("open-cite-modal-footer", "n_clicks"),
+     Input("close-cite-modal", "n_clicks")],
+    prevent_initial_call=True,
+)
+def toggle_cite_modal(header_clicks, footer_clicks, close_clicks):
+    return callback_context.triggered_id != "close-cite-modal"
+
+
+# ----------------------------------------------------------------------
+# Routing: every entry point resolves to one active gene
+# ----------------------------------------------------------------------
+@app.callback(
+    [Output("nav-store", "data"),
+     Output("search-feedback", "children"),
+     Output("search-input", "value")],
+    [Input("search-form", "n_submit"),
+     Input({"type": "quick-search", "index": ALL}, "n_clicks"),
+     Input({"type": "gene-link", "drug": ALL, "index": ALL}, "n_clicks"),
+     Input({"type": "neighbor-link", "index": ALL}, "n_clicks"),
+     Input(dict(genome_view.GENE_TRACK_ID, index=ALL), "clickData")],
+    State("search-input", "value"),
+    prevent_initial_call=True,
+)
+def route_query(
+    form_submit,
+    quick_clicks,
+    gene_link_clicks,
+    neighbor_clicks,
+    track_clicks,
+    search_value,
+):
+    """
+    Resolve a query from any entry point into the active gene.
+
+    Handles the search form (submitted with the button or the Enter key,
+    TASK-01), the quick-access pills, the Browse by Drug chips, neighbour
+    shortcuts and clicks on the neighbourhood track (TASK-10).
+    """
+    triggered = callback_context.triggered_id
+    if triggered is None:
+        raise PreventUpdate
+
+    # Clicks elsewhere in the interface carry their target in the component id:
+    # the Browse by Drug chips and neighbour shortcuts carry a locus tag, while
+    # a quick-access pill carries a query, which may be a full variant.
+    if isinstance(triggered, dict):
+        if not _triggered_click_value():
+            raise PreventUpdate
+
+        if triggered.get("type") == "gene-track":
+            locus_tag = _locus_from_click(_triggered_click_value())
+            if not locus_tag:
+                raise PreventUpdate
+            return _navigate(locus_tag)
+
+        token = triggered.get("index")
+        if triggered.get("type") == "quick-search":
+            parsed = search_utils.parse_query(
+                token, gene_resolver=data_loader.is_known_gene
+            )
+            return _navigate(parsed.gene_token, parsed.mutation, query=token)
+        return _navigate(token)
+
+    # Search submission.
+    parsed = search_utils.parse_query(search_value, gene_resolver=data_loader.is_known_gene)
+
+    if parsed.kind == "empty":
+        return None, None, dash.no_update
+
+    if parsed.kind == "standalone_mutation":
+        # A bare mutation cannot be resolved uniquely (TASK-03).
+        return dash.no_update, ui.mutation_advisory(parsed.message), dash.no_update
+
+    return _navigate(parsed.gene_token, parsed.mutation, query=parsed.raw)
+
+
+def _triggered_click_value():
+    """The n_clicks value that triggered a pattern-matching callback."""
+    triggered = callback_context.triggered
+    return triggered[0]["value"] if triggered else None
+
+
+def _locus_from_click(click_data) -> Optional[str]:
+    """Locus tag carried by a click on the neighbourhood track."""
+    if not isinstance(click_data, dict) or not click_data.get("points"):
+        return None
+    return click_data["points"][0].get("customdata")
+
+
+def _navigate(token: Optional[str], mutation: Optional[str] = None, query: Optional[str] = None):
+    """Build the routing outputs for a gene token, resolving it first."""
+    gene_info = data_loader.get_gene_info(token)
+
+    if gene_info is None:
+        # Fall back to a partial match before giving up.
+        matches = data_loader.search_genes(token) if token else []
+        if matches:
+            gene_info = matches[0]
+        else:
+            return dash.no_update, ui.gene_not_found_alert(query or token or ""), dash.no_update
+
+    nav = {"locus_tag": gene_info.locus_tag, "mutation": mutation}
+    display_query = (
+        f"{gene_info.display_name}_{mutation}" if mutation else gene_info.display_name
+    )
+    return nav, None, display_query
+
+
+# ----------------------------------------------------------------------
+# Rendering the active gene
+# ----------------------------------------------------------------------
 @app.callback(
     [Output("search-results-container", "children"),
-     Output("current-gene-store", "data")],
-    [Input("search-button", "n_clicks"),
-     Input("quick-rpoB", "n_clicks"),
-     Input("quick-gyrA", "n_clicks"),
-     Input("quick-katG", "n_clicks")],
-    State("search-input", "value")
+     Output("current-gene-store", "data"),
+     Output("selection-store", "data")],
+    Input("nav-store", "data"),
 )
-def search_gene(
-    search_clicks: Optional[int],
-    rpoB_clicks: Optional[int],
-    gyrA_clicks: Optional[int],
-    katG_clicks: Optional[int],
-    search_value: Optional[str]
-):
-    """Handle search input and display results."""
-    ctx = callback_context
-    if not ctx.triggered:
-        return [], None
-    
-    # Determine which button was clicked
-    triggered_id = ctx.triggered[0]["prop_id"].split(".")[0]
-    
-    if triggered_id == "quick-rpoB":
-        search_value = "rpoB"
-    elif triggered_id == "quick-gyrA":
-        search_value = "gyrA"
-    elif triggered_id == "quick-katG":
-        search_value = "katG"
-    
-    if not search_value:
-        return [], None
-    
-    # Try to find gene
-    gene_info = data_loader.get_gene_info(search_value)
-    
-    if not gene_info:
-        # Try extracting gene from mutation format (e.g., dnaA_c.102G>A)
-        if "_" in search_value:
-            gene_part = search_value.split("_")[0]
-            gene_info = data_loader.get_gene_info(gene_part)
-            
-    if not gene_info:
-        # Try searching for partial matches
-        genes = data_loader.search_genes(search_value)
-        if len(genes) > 0:
-            gene_info = genes[0]
-        else:
-            return dbc.Alert([
-                html.I(className="bi bi-exclamation-triangle-fill me-2"),
-                f"Gene '{search_value}' not found. Please try another search."
-            ], color="warning", className="rounded-3 shadow-sm"), None
-    
-    # Get gene mutations
-    mutations_df = data_loader.search_mutations_by_gene(gene_info.gene_name)
-    
-    # Get drug resistance info
-    drug_resistance = data_loader.get_drug_resistance_info(gene_info.gene_name)
-    
-    # Store gene_info as dict
+def render_gene(nav: Optional[Dict]):
+    """Render every panel for the active gene."""
+    if not nav or not nav.get("locus_tag"):
+        return ui.welcome_panel(CATALOGUE_TOTALS), None, None
+
+    gene_info = data_loader.get_gene_info(nav["locus_tag"])
+    if gene_info is None:
+        return ui.gene_not_found_alert(nav["locus_tag"]), None, None
+
+    requested_mutation = nav.get("mutation")
+    in_catalogue = data_loader.is_gene_in_catalogue(gene_info)
+    catalogue_gene = data_loader.resolve_catalogue_gene(gene_info.locus_tag) or \
+        data_loader.resolve_catalogue_gene(gene_info.gene_name)
+
+    selected_variant = (
+        f"{catalogue_gene}_{requested_mutation}"
+        if catalogue_gene and requested_mutation else None
+    )
+
     gene_data = {
         "gene_name": gene_info.gene_name,
         "locus_tag": gene_info.locus_tag,
@@ -232,372 +275,779 @@ def search_gene(
         "end": gene_info.end,
         "strand": gene_info.strand,
         "chromosome": gene_info.chromosome,
-        "product": gene_info.product
+        "product": gene_info.product,
+        "protein_length": gene_info.protein_length,
+        "catalogue_gene": catalogue_gene,
+        "in_catalogue": in_catalogue,
     }
-    
-    # Build results
-    results = []
-    
-    # Gene Info Card
-    gene_length = gene_info.end - gene_info.start + 1
-    results.append(
-        dbc.Card([
-            dbc.CardHeader([
-                dbc.Row([
-                    dbc.Col([
-                        html.H4(f"{gene_info.gene_name}", className="mb-0 fw-bold text-primary"),
-                        html.Small(f"Locus: {gene_info.locus_tag}", className="text-muted")
-                    ]),
-                    dbc.Col([
-                        html.Div([
-                            html.Span("Product: ", className="fw-bold"),
-                            html.Span(gene_info.product or 'Unknown')
-                        ], className="text-end text-muted small")
-                    ])
-                ], align="center")
-            ], className="card-header-custom"),
-            dbc.CardBody([
-                dbc.Row([
-                    dbc.Col([
-                        html.Div([
-                            html.Label("Genomic Region", className="text-muted small d-block"),
-                            html.Span(f"{gene_info.chromosome}:{gene_info.start:,}-{gene_info.end:,}", className="fw-500")
-                        ])
-                    ], width=4),
-                    dbc.Col([
-                        html.Div([
-                            html.Label("Strand", className="text-muted small d-block"),
-                            dbc.Badge("+" if gene_info.strand == "+" else "-", className="badge-custom")
-                        ])
-                    ], width=4),
-                    dbc.Col([
-                        html.Div([
-                            html.Label("Length", className="text-muted small d-block"),
-                            html.Span(f"{gene_length:,} bp", className="fw-500")
-                        ])
-                    ], width=4)
-                ])
-            ])
-        ], className="result-card")
+
+    results: List = [_gene_overview_card(gene_info, in_catalogue)]
+
+    # Interactive prokaryotic neighbourhood track.
+    window = genome_view.DEFAULT_WINDOW_BP
+    neighbours = data_loader.get_genes_in_window(
+        max(1, gene_info.start - window), gene_info.end + window, gene_info.chromosome
     )
-    
-    # JBrowse Card
-    jbrowse_start = max(1, gene_info.start - 500)
-    jbrowse_end = gene_info.end + 500
+    results.append(genome_view.neighborhood_card(neighbours, gene_info, window))
+
+    # Embedded JBrowse view.
+    flank = genome_view.DEFAULT_FLANK_BP
+    jbrowse_start = max(1, gene_info.start - flank)
+    jbrowse_end = gene_info.end + flank
     jb_config = data_loader.get_jbrowse_config(gene_info.chromosome, jbrowse_start, jbrowse_end)
-    
-    results.append(
-        dbc.Card([
-            dbc.CardHeader([
-                html.H5([html.I(className="bi bi-eye me-2"), "Genomic Visualization"], className="card-header-title")
-            ], className="card-header-custom"),
-            dbc.CardBody([
-                html.Div([
-                    dash_jbrowse.LinearGenomeView(
-                        id="jbrowse-linear-view",
-                        assembly=jb_config["assembly"],
-                        tracks=jb_config["tracks"],
-                        defaultSession=jb_config["defaultSession"],
-                        location=f"{gene_info.chromosome}:{jbrowse_start}-{jbrowse_end}"
-                    )
-                ], className="jbrowse-container"),
-                dbc.Button(
-                    [html.I(className="bi bi-box-arrow-up-right me-2"), "Explore Full Genome"],
-                    id="open-jbrowse",
-                    color="link",
-                    className="mt-3 p-0 text-decoration-none small",
-                    href=f"#jbrowse?region={gene_info.chromosome}:{jbrowse_start}-{jbrowse_end}"
-                )
-            ])
-        ], className="result-card")
+    jbrowse_component = dash_jbrowse.LinearGenomeView(
+        id="jbrowse-linear-view",
+        assembly=jb_config["assembly"],
+        tracks=jb_config["tracks"],
+        defaultSession=jb_config["defaultSession"],
+        location=f"{gene_info.chromosome}:{jbrowse_start}-{jbrowse_end}",
     )
-    
-    # Drug Resistance Card
+    results.append(genome_view.jbrowse_card(jbrowse_component, gene_info, flank))
+    results.append(genome_view.sequence_card(gene_info))
+
+    if not in_catalogue:
+        # Annotated but not catalogued: no resistance or coordinate tables
+        # would have anything to show (TASK-05).
+        results.append(ui.non_catalogue_card(gene_info))
+        return results, gene_data, None
+
+    drug_resistance = data_loader.get_drug_resistance_info(gene_info.locus_tag)
     if len(drug_resistance) > 0:
-        drugs = drug_resistance['drug'].unique()
-        drug_cards = []
-        for drug in drugs:
-            drug_data = drug_resistance[drug_resistance['drug'] == drug]
-            tiers = drug_data['tier'].unique()
-            
-            drug_cards.append(
-                dbc.Card([
-                    dbc.CardHeader([
-                        dbc.Row([
-                            dbc.Col(html.H6(drug, className="mb-0 fw-bold"), width="auto"),
-                            dbc.Col(dbc.Badge(f"{len(drug_data)} mutations", className="badge-custom ms-2"), width="auto")
-                        ], align="center")
-                    ], className="bg-light border-0 py-2"),
-                    dbc.CardBody([
-                        html.P([
-                            html.Strong("Evidence Tiers: ", className="small text-muted"),
-                            html.Span(", ".join([str(t) for t in tiers if pd.notna(t)]), className="small fw-bold")
-                        ], className="mb-3"),
-                        html.Div(
-                            id=f"drug-detail-{drug}",
-                            children=create_drug_detail_table(drug_data, gene_info.gene_name)
-                        )
-                    ], className="pt-0")
-                ], className="mb-3 border-0 shadow-sm")
-            )
-        
-        results.append(
-            dbc.Card([
-                dbc.CardHeader([
-                    html.H5([html.I(className="bi bi-capsule me-2"), "Drug Resistance Profile"], className="card-header-title")
-                ], className="card-header-custom"),
-                dbc.CardBody(drug_cards)
-            ], className="result-card")
-        )
-    
-    # Genomic Coordinates Card
+        results.append(_resistance_card(drug_resistance, requested_mutation))
+
+    mutations_df = data_loader.search_mutations_by_gene(gene_info.locus_tag)
     if len(mutations_df) > 0:
-        results.append(
+        results.append(_coordinates_card(mutations_df, gene_info, selected_variant))
+
+    results.append(_analysis_card())
+
+    initial_selection = None
+    if requested_mutation:
+        # Deep link straight to the requested variant (TASK-04).
+        initial_selection = _build_selection(
+            variant=selected_variant,
+            mutation=requested_mutation,
+            gene_data=gene_data,
+        )
+
+    return results, gene_data, initial_selection
+
+
+def _gene_overview_card(gene_info: GeneInfo, in_catalogue: bool) -> dbc.Card:
+    """Gene overview header card, including protein length (TASK-06)."""
+    previous_gene, next_gene = data_loader.get_neighbor_genes(gene_info)
+
+    if gene_info.protein_length:
+        length_display = html.Span([
+            f"{gene_info.length:,} bp",
+            html.Span(f" ({gene_info.protein_length:,} aa)", className="text-muted"),
+        ], className="fw-500")
+    else:
+        length_display = html.Span([
+            f"{gene_info.length:,} bp",
+            html.Span(
+                f" ({gene_info.biotype.replace('_', ' ') or 'non-coding'})",
+                className="text-muted",
+            ),
+        ], className="fw-500")
+
+    return dbc.Card([
+        dbc.CardHeader([
+            dbc.Row([
+                dbc.Col([
+                    html.H4(gene_info.display_name, className="mb-0 fw-bold text-primary"),
+                    html.Small(f"Locus: {gene_info.locus_tag}", className="text-muted"),
+                    dbc.Badge(
+                        "In WHO catalogue" if in_catalogue else "Not in WHO catalogue",
+                        className=("badge-tb ms-2" if in_catalogue else "badge-muted ms-2"),
+                    ),
+                ], md=7),
+                dbc.Col([
+                    html.Div([
+                        html.Span("Product: ", className="fw-bold"),
+                        html.Span(gene_info.product or "Unknown"),
+                    ], className="text-md-end text-muted small"),
+                ], md=5),
+            ], align="center"),
+        ], className="card-header-custom"),
+        dbc.CardBody([
+            dbc.Row([
+                _overview_field(
+                    "Genomic Region",
+                    f"{gene_info.chromosome}:{gene_info.start:,}-{gene_info.end:,}",
+                ),
+                dbc.Col([
+                    html.Div([
+                        html.Label("Strand", className="text-muted small d-block"),
+                        dbc.Badge(gene_info.strand, className="badge-custom"),
+                    ])
+                ], md=3, xs=6),
+                dbc.Col([
+                    html.Div([
+                        html.Label("Length", className="text-muted small d-block"),
+                        length_display,
+                    ])
+                ], md=3, xs=6),
+                _overview_field(
+                    "Biotype",
+                    (gene_info.biotype or "unknown").replace("_", " "),
+                    width=3,
+                ),
+            ], className="gy-3"),
+
+            html.Hr(className="my-3"),
+            genome_view.neighbor_navigation(previous_gene, next_gene),
+
+            html.Div([
+                html.Label("Functional note", className="text-muted small d-block mt-3"),
+                html.P(gene_info.note, className="small mb-0 gene-note"),
+            ]) if gene_info.note else None,
+        ]),
+    ], className="result-card")
+
+
+def _overview_field(label: str, value: str, width: int = 3) -> dbc.Col:
+    return dbc.Col([
+        html.Div([
+            html.Label(label, className="text-muted small d-block"),
+            html.Span(value, className="fw-500"),
+        ])
+    ], md=width, xs=6)
+
+
+def _resistance_card(
+    drug_resistance: pd.DataFrame, selected_mutation: Optional[str]
+) -> dbc.Card:
+    """Drug Resistance Profile card, one table per drug (TASK-12)."""
+    drug_cards = []
+    for drug in sorted(drug_resistance["drug"].dropna().unique()):
+        drug_data = drug_resistance[drug_resistance["drug"] == drug]
+        tiers = sorted({str(t) for t in drug_data["tier"].dropna().unique()})
+        graded = drug_data["FINAL CONFIDENCE GRADING"].fillna("")
+        associated = int(graded.str.startswith(("1)", "2)")).sum())
+
+        drug_cards.append(
             dbc.Card([
                 dbc.CardHeader([
                     dbc.Row([
-                        dbc.Col(html.H5([html.I(className="bi bi-map me-2"), "Genomic Coordinates"], className="card-header-title")),
-                        dbc.Col(html.Small(f"{len(mutations_df)} variants found", className="text-muted text-end"), width="auto")
-                    ], align="center")
-                ], className="card-header-custom"),
+                        dbc.Col(html.H6(drug, className="mb-0 fw-bold"), width="auto"),
+                        dbc.Col(dbc.Badge(
+                            f"{len(drug_data):,} mutations",
+                            className="badge-custom ms-2",
+                        ), width="auto"),
+                        dbc.Col(dbc.Badge(
+                            f"{associated:,} assoc. with resistance",
+                            className="badge-assoc ms-1",
+                        ), width="auto"),
+                        dbc.Col(html.Small(
+                            f"Tier {', '.join(tiers) if tiers else 'n/a'}",
+                            className="text-muted",
+                        ), width="auto"),
+                    ], align="center", className="g-2"),
+                ], className="bg-light border-0 py-2"),
                 dbc.CardBody([
-                    html.P("Select a variant row below to view detailed coordinate calculations.", className="text-muted small mb-3"),
-                    create_genomic_coords_table(mutations_df, gene_info)
-                ])
-            ], className="result-card")
+                    tables.create_drug_detail_table(
+                        drug_data, drug, selected_mutation=selected_mutation
+                    ),
+                ], className="pt-2"),
+            ], className="mb-3 border-0 shadow-sm")
         )
-    
-    # Calculator Card
-    results.append(
-        dbc.Card([
-            dbc.CardHeader([
-                html.H5([html.I(className="bi bi-calculator me-2"), "Coordinate Analysis"], className="card-header-title")
-            ], className="card-header-custom"),
-            dbc.CardBody([
-                html.Div(id="coordinate-calculator-display", children=[
-                    html.Div([
-                        html.I(className="bi bi-info-circle me-2"),
-                        "Selection required: Click a row in the Genomic Coordinates table above."
-                    ], className="text-muted text-center py-4")
-                ])
-            ])
-        ], id="calculator-card", className="result-card mb-5")
-    )
-    
-    return results, gene_data
+
+    return dbc.Card([
+        dbc.CardHeader([
+            html.H5(
+                [html.I(className="bi bi-capsule me-2"), "Drug Resistance Profile"],
+                className="card-header-title",
+            )
+        ], className="card-header-custom"),
+        dbc.CardBody([
+            html.P(
+                "Click any mutation to link it to its genomic coordinates and "
+                "coordinate analysis below.",
+                className="text-muted small mb-2",
+            ),
+            tables.resistance_column_toggle(),
+            html.Div(drug_cards),
+        ]),
+    ], className="result-card")
+
+
+def _coordinates_card(
+    mutations_df: pd.DataFrame, gene_info: GeneInfo, selected_variant: Optional[str]
+) -> dbc.Card:
+    """Genomic Coordinates card (TASK-07)."""
+    return dbc.Card([
+        dbc.CardHeader([
+            dbc.Row([
+                dbc.Col(html.H5(
+                    [html.I(className="bi bi-map me-2"), "Genomic Coordinates"],
+                    className="card-header-title",
+                )),
+                dbc.Col(html.Small(
+                    f"{len(mutations_df):,} nucleotide changes",
+                    className="text-muted text-end",
+                ), width="auto"),
+            ], align="center"),
+        ], className="card-header-custom"),
+        dbc.CardBody([
+            html.P([
+                "Select a row to view detailed coordinate calculations. Long "
+                "insertion and deletion alleles are shortened — hover a cell to "
+                "read the sequence, or select the row to copy it in full.",
+            ], className="text-muted small mb-3"),
+            tables.create_genomic_coords_table(
+                mutations_df, gene_info, coord_calculator, selected_variant
+            ),
+        ]),
+    ], className="result-card")
+
+
+def _analysis_card() -> dbc.Card:
+    return dbc.Card([
+        dbc.CardHeader([
+            html.H5(
+                [html.I(className="bi bi-calculator me-2"), "Coordinate Analysis"],
+                className="card-header-title",
+            )
+        ], className="card-header-custom"),
+        dbc.CardBody([
+            html.Div(id=dict(ANALYSIS_DISPLAY_ID), children=_analysis_placeholder()),
+        ]),
+    ], id="calculator-card", className="result-card mb-5")
+
+
+def _analysis_placeholder() -> html.Div:
+    return html.Div([
+        html.I(className="bi bi-info-circle me-2"),
+        "Select a mutation in the Drug Resistance Profile or a row in the "
+        "Genomic Coordinates table to see its coordinate analysis.",
+    ], className="text-muted text-center py-4")
+
+
+# ----------------------------------------------------------------------
+# Shared selection state
+# ----------------------------------------------------------------------
+def _build_selection(
+    variant: Optional[str],
+    mutation: Optional[str],
+    gene_data: Dict,
+    position: Optional[int] = None,
+    reference: Optional[str] = None,
+    alternative: Optional[str] = None,
+) -> Dict:
+    """
+    Normalise a selection, filling in coordinates when they are not known.
+
+    A click in the resistance table identifies a mutation but no specific
+    nucleotide change, so the first recorded coordinate for that variant is
+    resolved here to drive the analysis card (TASK-08).
+    """
+    selection = {
+        "variant": variant,
+        "mutation": mutation,
+        "position": position,
+        "reference": reference,
+        "alternative": alternative,
+        "coordinate_count": None,
+    }
+
+    if variant:
+        coordinates = data_loader.get_variant_coordinates(variant)
+        selection["coordinate_count"] = int(len(coordinates))
+        if position is None and len(coordinates) > 0:
+            first = coordinates.iloc[0]
+            selection["position"] = (
+                int(first["position"]) if str(first["position"]).isdigit() else None
+            )
+            selection["reference"] = first.get("reference_nucleotide")
+            selection["alternative"] = first.get("alternative_nucleotide")
+            selection["resolved_from_catalogue"] = True
+
+    return selection
 
 
 @app.callback(
-    Output("coordinate-calculator-display", "children"),
-    [Input("genomic-coords-table", "active_cell")],
-    [State("genomic-coords-table", "derived_viewport_data"),
+    Output("selection-store", "data", allow_duplicate=True),
+    Input(dict(tables.COORDS_TABLE_ID, index=ALL), "active_cell"),
+    [State(dict(tables.COORDS_TABLE_ID, index=ALL), "derived_viewport_data"),
      State("current-gene-store", "data")],
-    prevent_initial_call=True
+    prevent_initial_call=True,
 )
-def display_coordinate_calculation(active_cell, viewport_data, gene_data):
-    """Update coordinate calculator display based on selected mutation."""
+def select_from_coordinates(active_cells, viewport_datas, gene_data):
+    """A click in the Genomic Coordinates table selects that exact change."""
+    active_cell = active_cells[0] if active_cells else None
+    viewport_data = viewport_datas[0] if viewport_datas else None
     if not active_cell or not viewport_data or not gene_data:
-        return html.Div("Select a mutation from the table above to see detailed coordinate calculations.", className="text-muted")
-    
-    # Get the row data from the current viewport (handles pagination/filtering)
-    row_idx = active_cell['row']
-    
-    if row_idx >= len(viewport_data):
-        return html.Div("Error: Selected row not found.", className="text-danger")
-        
-    row = viewport_data[row_idx]
-    variant = row['variant']
-    gene_name = gene_data['gene_name']
-    
-    # Use the SPECIFIC genomic position from the clicked row
-    actual_genomic_pos = int(row['position']) if str(row['position']).isdigit() else None
-    ref = row.get('reference_nucleotide', 'N/A')
-    alt = row.get('alternative_nucleotide', 'N/A')
-    
-    from data_utils import GeneInfo
-    rel_pos = coord_calculator.calculate_relative_position(actual_genomic_pos, 
-                                                         GeneInfo(
-                                                             gene_id="", gene_name=gene_name, locus_tag=gene_data['locus_tag'],
-                                                             start=gene_data['start'], end=gene_data['end'], strand=gene_data['strand'],
-                                                             product=gene_data['product'], chromosome=gene_data['chromosome']
-                                                         )) if actual_genomic_pos else None
-    
-    # Get ALL drug resistance entries for this variant
-    resistance_df = data_loader.get_drug_resistance_info(gene_name, variant)
-    
-    if len(resistance_df) == 0:
-        if any(term in variant.lower() for term in ["fs", "stop", "ins", "del"]):
-            resistance_df = data_loader.get_drug_resistance_info(gene_name, "LoF")
-    
-    gen_pos_display = f"{actual_genomic_pos:,}" if actual_genomic_pos else "N/A"
-    
-    # Create Drug Resistance Summary
-    if len(resistance_df) > 0:
-        res_items = []
-        for _, res_row in resistance_df.iterrows():
-            res_items.append(html.Div([
-                dbc.Row([
-                    dbc.Col(html.Span([
-                        html.Strong(res_row['drug'], className="text-dark"),
-                        html.Br(),
-                        html.Small(f"Tier {res_row.get('tier', 'N/A')}", className="text-muted")
-                    ]), width=4),
-                    dbc.Col(dbc.Badge(
-                        res_row.get('FINAL CONFIDENCE GRADING', 'N/A'), 
-                        className="badge-tb" if "Assoc w R" in str(res_row.get('FINAL CONFIDENCE GRADING', '')) else "badge-custom"
-                    ), width=8, className="text-end"),
-                ], className="py-2 border-bottom align-items-center g-0")
-            ]))
-        res_display = html.Div(res_items, className="mt-2")
-    else:
-        res_display = html.P("No drug resistance data found in catalogue for this variant.", className="text-muted small")
+        raise PreventUpdate
 
-    # Create display
-    return html.Div([
+    row_index = active_cell["row"]
+    if row_index >= len(viewport_data):
+        raise PreventUpdate
+
+    row = viewport_data[row_index]
+    variant = row.get("variant")
+    position = row.get("position")
+    mutation = variant.split("_", 1)[1] if variant and "_" in variant else None
+
+    return _build_selection(
+        variant=variant,
+        mutation=mutation,
+        gene_data=gene_data,
+        position=int(position) if str(position).isdigit() else None,
+        reference=row.get("reference_nucleotide"),
+        alternative=row.get("alternative_nucleotide"),
+    )
+
+
+@app.callback(
+    Output("selection-store", "data", allow_duplicate=True),
+    Input({"type": "drug-table", "index": ALL}, "active_cell"),
+    [State({"type": "drug-table", "index": ALL}, "derived_viewport_data"),
+     State("current-gene-store", "data")],
+    prevent_initial_call=True,
+)
+def select_from_resistance(active_cells, viewports, gene_data):
+    """A click in the Drug Resistance Profile selects that mutation (TASK-08)."""
+    triggered = callback_context.triggered_id
+    if not triggered or not gene_data:
+        raise PreventUpdate
+
+    ids = [item["id"] for item in callback_context.inputs_list[0]]
+    try:
+        position = next(
+            i for i, item in enumerate(ids) if dict(item) == dict(triggered)
+        )
+    except StopIteration:
+        raise PreventUpdate
+
+    active_cell = active_cells[position]
+    viewport = viewports[position] if position < len(viewports) else None
+    if not active_cell or not viewport or active_cell["row"] >= len(viewport):
+        raise PreventUpdate
+
+    row = viewport[active_cell["row"]]
+    mutation = row.get("mutation")
+    variant = row.get("variant") or (
+        f"{gene_data.get('catalogue_gene')}_{mutation}"
+        if gene_data.get("catalogue_gene") and mutation else None
+    )
+
+    return _build_selection(variant=variant, mutation=mutation, gene_data=gene_data)
+
+
+# ----------------------------------------------------------------------
+# Selection consumers
+# ----------------------------------------------------------------------
+@app.callback(
+    [Output(dict(tables.COORDS_TABLE_ID, index=ALL), "style_data_conditional"),
+     Output(dict(tables.COORDS_TABLE_ID, index=ALL), "page_current")],
+    Input("selection-store", "data"),
+    State(dict(tables.COORDS_TABLE_ID, index=ALL), "data"),
+    prevent_initial_call=True,
+)
+def sync_coordinates_table(selection, table_datas):
+    """Highlight and page to the selected variant in the coordinates table."""
+    variant = (selection or {}).get("variant")
+    styles = tables.coordinates_style_conditional(variant)
+
+    pages = []
+    for rows in table_datas:
+        page = 0
+        if variant and rows:
+            page = next(
+                (i // tables.COORDINATES_PAGE_SIZE for i, row in enumerate(rows)
+                 if row.get("variant") == variant),
+                0,
+            )
+        pages.append(page)
+
+    return [styles] * len(table_datas), pages
+
+
+@app.callback(
+    [Output({"type": "drug-table", "index": ALL}, "style_data_conditional"),
+     Output({"type": "drug-table", "index": ALL}, "page_current")],
+    Input("selection-store", "data"),
+    State({"type": "drug-table", "index": ALL}, "data"),
+    prevent_initial_call=True,
+)
+def sync_resistance_tables(selection, table_data):
+    """Highlight the selected mutation in every drug table (TASK-04, TASK-08)."""
+    mutation = (selection or {}).get("mutation")
+    styles = tables.resistance_style_conditional(mutation)
+    count = len(table_data)
+
+    pages = [
+        tables.page_of_mutation(pd.DataFrame(rows or []), mutation)
+        if mutation and rows else 0
+        for rows in table_data
+    ]
+    return [styles] * count, pages
+
+
+@app.callback(
+    Output({"type": "drug-table", "index": ALL}, "columns"),
+    Input("resistance-column-toggle", "value"),
+    prevent_initial_call=True,
+)
+def toggle_resistance_columns(visible_keys):
+    """Show or hide the optional WHO metadata columns (TASK-12.4)."""
+    columns = tables.build_resistance_columns(visible_keys)
+    return [columns] * len(callback_context.outputs_list)
+
+
+@app.callback(
+    Output(dict(genome_view.GENE_TRACK_ID, index=ALL), "figure"),
+    Input("neighborhood-window", "value"),
+    State("current-gene-store", "data"),
+    prevent_initial_call=True,
+)
+def resize_neighborhood(window_bp, gene_data):
+    """Redraw the neighbourhood track at a different zoom level."""
+    if not gene_data or not window_bp:
+        raise PreventUpdate
+
+    gene_info = data_loader.get_gene_info(gene_data["locus_tag"])
+    if gene_info is None:
+        raise PreventUpdate
+
+    window_bp = int(window_bp)
+    window_start = max(1, gene_info.start - window_bp)
+    window_end = gene_info.end + window_bp
+    genes = data_loader.get_genes_in_window(window_start, window_end, gene_info.chromosome)
+    figure = genome_view.build_neighborhood_figure(
+        genes, gene_info, window_start, window_end
+    )
+    return [figure] * len(callback_context.outputs_list)
+
+
+@app.callback(
+    [Output("sequence-output", "children"),
+     Output("sequence-meta", "children"),
+     Output("sequence-clipboard", "content")],
+    [Input("sequence-kind", "value"),
+     Input("sequence-flank", "value")],
+    State("current-gene-store", "data"),
+)
+def render_sequence(kind, flank, gene_data):
+    """Retrieve the coding sequence, protein or flanking regions (TASK-09.3)."""
+    if not gene_data:
+        raise PreventUpdate
+
+    gene_info = data_loader.get_gene_info(gene_data["locus_tag"])
+    if gene_info is None:
+        raise PreventUpdate
+
+    flank = int(flank or 0)
+
+    if kind == "protein":
+        protein = (data_loader.translate_gene(gene_info) or "").rstrip("*")
+        meta = f"Protein translation · {len(protein):,} aa · bacterial codon table 11"
+        return genome_view.format_sequence(protein, block=10, per_line=60), meta, protein
+
+    if kind == "cds":
+        sequence = data_loader.get_gene_sequence(gene_info)
+        meta = (
+            f"Coding sequence · {len(sequence):,} bp · "
+            f"{gene_info.chromosome}:{gene_info.start:,}-{gene_info.end:,} "
+            f"({gene_info.strand} strand, shown 5'→3')"
+        )
+    elif kind == "cds_flank":
+        sequence = data_loader.get_gene_sequence(gene_info, flank=flank)
+        meta = (
+            f"Coding sequence ± {flank:,} bp · {len(sequence):,} bp · "
+            f"{gene_info.chromosome}:{max(1, gene_info.start - flank):,}-"
+            f"{gene_info.end + flank:,} ({gene_info.strand} strand, shown 5'→3')"
+        )
+    elif kind == "upstream":
+        if gene_info.strand == "+":
+            start, end = gene_info.start - flank, gene_info.start - 1
+        else:
+            start, end = gene_info.end + 1, gene_info.end + flank
+        sequence = data_loader.get_sequence(start, end, gene_info.chromosome)
+        if gene_info.strand == "-":
+            sequence = _reverse_complement(sequence)
+        meta = f"Upstream flank · {len(sequence):,} bp · {flank:,} bp requested"
+    elif kind == "downstream":
+        if gene_info.strand == "+":
+            start, end = gene_info.end + 1, gene_info.end + flank
+        else:
+            start, end = gene_info.start - flank, gene_info.start - 1
+        sequence = data_loader.get_sequence(start, end, gene_info.chromosome)
+        if gene_info.strand == "-":
+            sequence = _reverse_complement(sequence)
+        meta = f"Downstream flank · {len(sequence):,} bp · {flank:,} bp requested"
+    else:
+        raise PreventUpdate
+
+    return genome_view.format_sequence(sequence), meta, sequence
+
+
+def _reverse_complement(sequence: str) -> str:
+    from data_utils import _reverse_complement as rc
+
+    return rc(sequence)
+
+
+# ----------------------------------------------------------------------
+# Coordinate analysis
+# ----------------------------------------------------------------------
+@app.callback(
+    Output(dict(ANALYSIS_DISPLAY_ID, index=ALL), "children"),
+    Input("selection-store", "data"),
+    State("current-gene-store", "data"),
+)
+def display_coordinate_calculation(selection, gene_data):
+    """Coordinate analysis for the shared selection (TASK-04, TASK-08)."""
+    panels = len(callback_context.outputs_list)
+    if not panels:
+        raise PreventUpdate
+    if not selection or not gene_data:
+        return [_analysis_placeholder()] * panels
+
+    variant = selection.get("variant")
+    mutation = selection.get("mutation")
+    if not variant and not mutation:
+        return [_analysis_placeholder()] * panels
+
+    gene_name = gene_data["gene_name"]
+    gene_info = GeneInfo(
+        gene_id="",
+        gene_name=gene_name,
+        locus_tag=gene_data["locus_tag"],
+        start=gene_data["start"],
+        end=gene_data["end"],
+        strand=gene_data["strand"],
+        product=gene_data.get("product", ""),
+        chromosome=gene_data["chromosome"],
+    )
+
+    position = selection.get("position")
+    reference = selection.get("reference") or "N/A"
+    alternative = selection.get("alternative") or "N/A"
+    relative = (
+        coord_calculator.calculate_relative_position(int(position), gene_info)
+        if position else None
+    )
+    amino_acid = coord_calculator.parse_p_notation(mutation) if mutation else None
+
+    resistance_df = data_loader.get_drug_resistance_info(
+        gene_data["locus_tag"], variant or mutation
+    )
+    if len(resistance_df) == 0 and mutation:
+        if any(term in mutation.lower() for term in ("fs", "stop", "ins", "del", "?")):
+            resistance_df = data_loader.get_drug_resistance_info(
+                gene_data["locus_tag"], "LoF"
+            )
+
+    panel = html.Div([
         dbc.Row([
             dbc.Col([
-                html.H5(variant, className="text-primary fw-bold mb-3"),
-            ])
-        ]),
+                html.H5(variant or mutation, className="text-primary fw-bold mb-1"),
+                html.Small(
+                    _selection_provenance(selection),
+                    className="text-muted",
+                ),
+            ]),
+        ], className="mb-3"),
+
         dbc.Row([
             dbc.Col([
-                html.Div([
-                    html.Label("Genomic Position", className="text-muted small d-block"),
-                    html.Span(gen_pos_display, className="fw-bold")
-                ], className="mb-3"),
-                html.Div([
-                    html.Label("Nucleotide Change", className="text-muted small d-block"),
-                    html.Span(f"{ref} > {alt}", className="fw-bold")
-                ])
-            ], width=6),
+                _analysis_field("Genomic Position", f"{position:,}" if position else "N/A"),
+                _analysis_field(
+                    "Gene Context", "{} ({} strand)".format(gene_name, gene_data["strand"])
+                ),
+                _allele_field(reference, alternative),
+            ], md=6),
             dbc.Col([
-                html.Div([
-                    html.Label("Gene Relative (c.)", className="text-muted small d-block"),
-                    html.Span(f"c.{rel_pos}" if rel_pos else "N/A", className="fw-bold text-success")
-                ], className="mb-3"),
-                html.Div([
-                    html.Label("Gene Context", className="text-muted small d-block"),
-                    html.Span(f"{gene_name} ({gene_data['strand']})", className="fw-bold")
-                ])
-            ], width=6)
-        ], className="mb-4 bg-light p-3 rounded-3"),
-        
-        html.H6("Resistance Association", className="fw-bold mb-2 small text-uppercase letter-spacing-1"),
-        res_display,
-        
+                _analysis_field(
+                    "Gene Relative (c.)",
+                    f"c.{relative}" if relative else "N/A",
+                    value_class="fw-bold text-success",
+                ),
+                _analysis_field(
+                    "Amino Acid Position",
+                    f"{amino_acid}" if amino_acid else "—",
+                ),
+            ], md=6),
+        ], className="mb-4 bg-light p-3 rounded-3 gy-3"),
+
+        html.H6(
+            "Resistance Association",
+            className="fw-bold mb-2 small text-uppercase letter-spacing-1",
+        ),
+        _resistance_summary(resistance_df),
+
         dbc.Accordion([
-            dbc.AccordionItem([
+            dbc.AccordionItem(
                 html.Code(
-                    f"Formula ({gene_data['strand']} strand):\n"
-                    f"{'genomic - start + 1' if gene_data['strand'] == '+' else 'end - genomic + 1'}\n\n"
-                    f"Calculation:\n"
-                    f"{f'{actual_genomic_pos:,} - {gene_data['start']:,} + 1' if gene_data['strand'] == '+' else f'{gene_data['end']:,} - {actual_genomic_pos:,} + 1'} = {rel_pos}",
-                    style={"whiteSpace": "pre-wrap", "display": "block", "padding": "15px", "fontSize": "0.85rem"}
-                )
-            ], title="View Mathematical Derivation", className="mt-4 border-0")
-        ], start_collapsed=True, className="mt-4")
+                    _derivation_text(gene_data, position, relative),
+                    style={
+                        "whiteSpace": "pre-wrap",
+                        "display": "block",
+                        "padding": "15px",
+                        "fontSize": "0.85rem",
+                    },
+                ),
+                title="View Mathematical Derivation",
+                className="mt-4 border-0",
+            )
+        ], start_collapsed=True, className="mt-4"),
     ])
 
+    return [panel] * panels
 
-def create_drug_detail_table(drug_data: pd.DataFrame, gene_name: str) -> html.Div:
-    """Create detailed drug resistance table."""
-    tier_order = {'1': 1, '2': 2, '3': 3, '4': 4, '5': 5}
-    drug_data_sorted = drug_data.copy()
-    drug_data_sorted['tier_sort'] = drug_data_sorted['tier'].map(tier_order).fillna(99)
-    drug_data_sorted = drug_data_sorted.sort_values('tier_sort')
-    
-    cols = [
-        {'name': 'Mutation', 'id': 'mutation'},
-        {'name': 'Tier', 'id': 'tier'},
-        {'name': 'Confidence', 'id': 'FINAL CONFIDENCE GRADING'}
+
+def _selection_provenance(selection: Dict) -> str:
+    """Explain which nucleotide change is being analysed."""
+    count = selection.get("coordinate_count")
+    if selection.get("resolved_from_catalogue") and count:
+        if count > 1:
+            return (
+                f"Showing the first of {count:,} nucleotide changes recorded for "
+                "this variant — select a row in Genomic Coordinates for a specific one."
+            )
+        return "Single nucleotide change recorded for this variant."
+    if count and count > 1:
+        return f"{count:,} nucleotide changes recorded for this variant."
+    return ""
+
+
+def _analysis_field(label: str, value: str, value_class: str = "fw-bold") -> html.Div:
+    return html.Div([
+        html.Label(label, className="text-muted small d-block"),
+        html.Span(value, className=value_class),
+    ], className="mb-3")
+
+
+def _allele_field(reference: str, alternative: str) -> html.Div:
+    """
+    Nucleotide change, with a copy button for long indel alleles.
+
+    Large deletions carry alleles thousands of bases long, so the full
+    sequence is offered through the clipboard rather than being rendered
+    inline (TASK-07).
+    """
+    long_allele = max(len(str(reference)), len(str(alternative))) > 40
+    summary = f"{_shorten(reference)} > {_shorten(alternative)}"
+
+    children = [
+        html.Label("Nucleotide Change", className="text-muted small d-block"),
+        html.Span(summary, className="fw-bold allele-summary"),
     ]
-    
-    table = dash_table.DataTable(
-        data=drug_data_sorted.to_dict('records'),
-        columns=cols,
-        filter_action="native",
-        sort_action="native",
-        page_size=5,
-        style_table={'overflowX': 'auto'},
-        style_cell={
-            'textAlign': 'left',
-            'padding': '12px',
-            'fontFamily': 'inherit',
-            'fontSize': '0.9rem'
-        },
-        style_header={
-            'backgroundColor': 'transparent',
-            'fontWeight': 'bold',
-            'borderBottom': '2px solid #E2E8F0',
-            'textTransform': 'uppercase',
-            'fontSize': '0.75rem',
-            'letterSpacing': '0.05em'
-        },
-        style_data={
-            'borderBottom': '1px solid #F1F5F9'
-        }
-    )
-    
-    return html.Div(table, className="dash-table-container")
+
+    if long_allele:
+        children.extend([
+            html.Div([
+                html.Details([
+                    html.Summary("Full alleles", className="small text-primary"),
+                    html.Div([
+                        html.Div("REF", className="small text-muted mt-2"),
+                        html.Pre(str(reference), id="allele-ref", className="sequence-output allele-block"),
+                        dcc.Clipboard(
+                            target_id="allele-ref",
+                            title="Copy reference allele",
+                            className="copy-btn",
+                        ),
+                        html.Div("ALT", className="small text-muted mt-2"),
+                        html.Pre(str(alternative), id="allele-alt", className="sequence-output allele-block"),
+                        dcc.Clipboard(
+                            target_id="allele-alt",
+                            title="Copy alternative allele",
+                            className="copy-btn",
+                        ),
+                    ]),
+                ]),
+            ], className="mt-2"),
+        ])
+
+    return html.Div(children, className="mb-3")
 
 
-def create_genomic_coords_table(mutations_df: pd.DataFrame, gene_info) -> html.Div:
-    """Create genomic coordinates drill-down table."""
-    display_df = mutations_df.copy()
-    
-    display_df['Gene Relative Pos'] = display_df.apply(
-        lambda row: coord_calculator.calculate_relative_position(
-            int(row['position']), gene_info
-        ) if row.get('position') and str(row['position']).isdigit() else None,
-        axis=1
+def _shorten(allele: str, limit: int = 20) -> str:
+    text = str(allele)
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}… [{len(text):,} bp]"
+
+
+def _resistance_summary(resistance_df: pd.DataFrame) -> html.Div:
+    """Drug-by-drug grading summary for the selected variant."""
+    if len(resistance_df) == 0:
+        return html.P(
+            "No drug resistance data found in the catalogue for this variant.",
+            className="text-muted small",
+        )
+
+    rows = []
+    for _, entry in resistance_df.iterrows():
+        grading = str(entry.get("FINAL CONFIDENCE GRADING", "") or "N/A")
+        comment = entry.get("Comment")
+        changes = entry.get("CHANGES vs ver1")
+
+        rows.append(html.Div([
+            dbc.Row([
+                dbc.Col([
+                    html.Strong(entry.get("drug", "—"), className="text-dark"),
+                    html.Br(),
+                    html.Small([
+                        f"Tier {entry.get('tier', 'N/A')}",
+                        html.Span(
+                            f" · {entry.get('effect')}" if pd.notna(entry.get("effect")) else "",
+                            className="text-muted",
+                        ),
+                    ], className="text-muted"),
+                ], md=5),
+                dbc.Col([
+                    dbc.Badge(
+                        grading,
+                        className="badge-tb" if grading.startswith(("1)", "2)")) else "badge-custom",
+                    ),
+                    html.Div(
+                        html.Small(changes, className="text-danger"),
+                    ) if pd.notna(changes) and str(changes) not in ("", "No change") else None,
+                ], md=7, className="text-md-end"),
+            ], className="align-items-center g-2"),
+            html.Div(
+                html.Small([html.I(className="bi bi-exclamation-circle me-1"), comment],
+                           className="text-danger fst-italic"),
+                className="mt-1",
+            ) if pd.notna(comment) and str(comment).strip() else None,
+        ], className="py-2 border-bottom"))
+
+    return html.Div(rows, className="mt-2")
+
+
+def _derivation_text(gene_data: Dict, position: Optional[int], relative: Optional[int]) -> str:
+    """Human-readable derivation of the gene-relative coordinate."""
+    strand = gene_data["strand"]
+    start = gene_data["start"]
+    end = gene_data["end"]
+
+    if strand == "+":
+        formula = "c. position = genomic - gene_start + 1"
+        calculation = (
+            "{:,} - {:,} + 1 = {}".format(position, start, relative)
+            if position and relative is not None else "n/a"
+        )
+    else:
+        formula = "c. position = gene_end - genomic + 1"
+        calculation = (
+            "{:,} - {:,} + 1 = {}".format(end, position, relative)
+            if position and relative is not None else "n/a"
+        )
+
+    return (
+        "Gene: {} ({})\n"
+        "Span: {:,}-{:,} ({} strand)\n\n"
+        "Formula ({} strand):\n{}\n\n"
+        "Calculation:\n{}\n\n"
+        "Note: M. tuberculosis is a prokaryote, so the coding sequence is\n"
+        "contiguous and no intron offsets apply."
+    ).format(
+        gene_data.get("gene_name", ""), gene_data.get("locus_tag", ""),
+        start, end, strand, strand, formula, calculation,
     )
-    
-    display_df['Gene Relative'] = display_df['Gene Relative Pos'].apply(
-        lambda x: f"c.{int(x)}" if pd.notna(x) else 'N/A'
-    )
-    
-    display_df['Position Display'] = display_df['position'].apply(
-        lambda x: f"{int(x):,}" if str(x).isdigit() else 'N/A'
-    )
-    
-    cols = [
-        {'name': 'Variant', 'id': 'variant'},
-        {'name': 'Genomic Position', 'id': 'Position Display'},
-        {'name': 'Ref', 'id': 'reference_nucleotide'},
-        {'name': 'Alt', 'id': 'alternative_nucleotide'},
-        {'name': 'Gene Relative', 'id': 'Gene Relative'}
-    ]
-    
-    table = dash_table.DataTable(
-        id="genomic-coords-table",
-        data=display_df.to_dict('records'),
-        columns=cols,
-        cell_selectable=True,
-        filter_action="native",
-        sort_action="native",
-        page_size=10,
-        style_table={'overflowX': 'auto'},
-        style_cell={
-            'textAlign': 'left',
-            'padding': '12px',
-            'fontFamily': 'inherit',
-            'fontSize': '0.9rem'
-        },
-        style_header={
-            'backgroundColor': '#F8FAFC',
-            'fontWeight': 'bold',
-            'borderBottom': '2px solid #E2E8F0'
-        },
-        style_data_conditional=[
-            {
-                'if': {'state': 'active'},
-                'backgroundColor': 'rgba(156, 203, 203, 0.1)',
-                'border': '1px solid #438E8E'
-            }
-        ]
-    )
-    
-    return html.Div(table, className="dash-table-container")
 
 
 if __name__ == "__main__":

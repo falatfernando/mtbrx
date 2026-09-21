@@ -10,14 +10,22 @@ TB Dashboard is a web-based genomic explorer for *Mycobacterium tuberculosis*, d
 
 ## Features
 
-- **Gene Search**: Search for genes by name or locus tag (e.g., `dnaA`, `gyrA`, `rpoB`, `katG`)
-- **Genomic Visualization**: View genomic regions using JBrowse integration with GFF3 annotation
-- **Drug Resistance Profiles**: Display associated drugs and resistance tiers from the WHO catalogue
+- **Multimodal Search**: One box accepts three query formats, and `Enter` submits:
+  - Locus tag / gene ID — `Rv0677c`
+  - Gene name / symbol — `mmpS5`
+  - Variant — `katG_Ser315Thr` (three-letter notation; `katG_S315T` is accepted and normalised)
+- **Variant Deep Linking**: Searching a variant loads the gene *and* selects, highlights and pages to that mutation in the resistance and coordinate tables
+- **Gene Neighbourhood Track**: An interactive prokaryotic track — click any neighbouring gene to load it, hover for gene symbol, locus tag, product and functional note
+- **Genomic Visualization**: Embedded JBrowse 2 view of the region
+- **Drug Resistance Profiles**: The full WHO catalogue schema — mutation, tier, final confidence grading, effect, comment, `CHANGES vs ver1`, relaxed-thresholds simulation and silent-mutation flag, with a column-visibility control
 - **Coordinate Calculator**: Automatically convert between:
   - Genomic coordinates (absolute position on chromosome)
   - Gene-relative coordinates (c. notation, e.g., c.102G>A)
   - Amino acid positions (p. notation, e.g., p.Asp3Ala)
-- **Drill-down Details**: Explore all nucleotide changes for each mutation
+- **Sequence Retrieval**: Coding sequence, protein translation, and adjustable upstream/downstream flanks (default ±500 bp), with copy-to-clipboard
+- **Browse by Drug**: Start from a drug name and jump to any of its catalogue genes
+- **Catalogue Summary**: Per-gene and per-drug counts by tier, confidence grading and loss of function, with aggregate totals
+- **Drill-down Details**: Explore all nucleotide changes for each mutation, including multi-kilobase indel alleles
 
 ## Installation
 
@@ -68,14 +76,28 @@ The application will start on `http://localhost:8050`
 ### Quick Start
 
 1. Open your browser to `http://localhost:8050`
-2. Enter a gene name in the search box (e.g., `dnaA`, `gyrA`, `rpoB`)
-3. Click the search button or press Enter
+2. Search by gene name (`katG`), locus tag (`Rv1908c`) or variant (`katG_Ser315Thr`)
+3. Click the search button or press `Enter`
 4. Explore the results:
-   - **Gene Info**: Genomic coordinates, strand, length
+   - **Gene Info**: Genomic coordinates, strand, length in bp and amino acids, functional note
+   - **Gene Neighbourhood**: Clickable track of the surrounding genes
    - **Genomic Visualization**: JBrowse view of the region
-   - **Drug Resistance**: Associated drugs and mutation tiers
+   - **Sequence Retrieval**: CDS, protein and flanking sequence
+   - **Drug Resistance**: Associated drugs, tiers and WHO confidence gradings
    - **Genomic Coordinates**: All nucleotide changes
-   - **Coordinate Calculator**: Detailed position calculations
+   - **Coordinate Analysis**: Detailed position calculations for the selected mutation
+
+Alternatively, use **Browse by Drug** in the header to reach a gene from a drug
+name, or **Catalogue Summary** for counts across the whole dataset.
+
+### A note on prokaryotic annotation
+
+*M. tuberculosis* is a bacterium: it has no splicing, and a coding sequence is
+equivalent to its gene. The annotation handed to the genome browser is
+therefore flattened to a single gene-level feature per locus, which removes
+both the redundant gene/CDS pair and every intron-based control from the
+browser's sequence tools. Protein translation and flanking-sequence retrieval
+are provided by the **Sequence Retrieval** panel instead.
 
 ### Coordinate Calculation Feature
 
@@ -111,13 +133,24 @@ Gene on - strand:
 
 ```
 tbdashboard/
-├── app.py                      # Main Dash application
+├── app.py                      # Dash application and callbacks
+├── layout.py                   # Static layout, branding, modals and citation
+├── genome_view.py              # Gene neighbourhood track, JBrowse and sequence panel
+├── tables.py                   # Resistance, coordinate and summary tables
+├── search_utils.py             # Query parsing and mutation normalisation
 ├── data_utils.py               # Data loading and parsing utilities
 ├── coordinate_calculator.py    # Coordinate conversion utilities
 ├── requirements.txt            # Python dependencies
 ├── README.md                   # This file
+├── assets/
+│   ├── style.css              # Application styling
+│   ├── tbdashboard.js         # Removes residual intron controls from JBrowse dialogs
+│   ├── lapam.png              # Laboratory logo
+│   └── usp.png                # Optional: USP crest, shown in the footer when present
+├── tests/                      # pytest suite
 └── data/
     ├── h37rv.gff3             # Genome annotation
+    ├── h37rv.prokaryote.gff3  # Generated: flattened annotation for the browser
     ├── h37rv.fasta            # Reference sequence
     ├── h37rv.fasta.fai        # FASTA index
     ├── catalogue_master_file.txt  # Drug resistance catalogue

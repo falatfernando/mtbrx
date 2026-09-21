@@ -2,8 +2,12 @@
 Coordinate calculator for converting between gene-relative and genomic positions.
 This utility bridges the gap between the catalogue master file and genomic coordinates.
 """
-import pandas as pd
 import re
+from typing import Dict, List, Optional
+
+import pandas as pd
+
+from data_utils import DataLoader, GeneInfo
 
 
 class CoordinateCalculator:
@@ -261,7 +265,3 @@ class CoordinateCalculator:
             result = self.get_mutation_with_coordinates(variant, gene_name)
             results.append(result)
         return results
-
-
-# Import pandas at module level for the parse functions
-import pandas as pd
