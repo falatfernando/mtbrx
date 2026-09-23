@@ -172,7 +172,8 @@ def navbar(app) -> dbc.Navbar:
                 ),
                 html.A(
                     dbc.NavbarBrand(
-                        "Genomic Resistance Explorer",
+                        [html.I("Mycobacterium tuberculosis"),
+                         " Genomic Resistance Explorer"],
                         className="navbar-brand-text",
                     ),
                     href="/",
@@ -232,8 +233,8 @@ def hero_search() -> html.Div:
             dbc.Row([
                 dbc.Col([
                     html.H1([
-                        dbc.Badge("TB", className="badge-tb me-2"),
-                        "Dashboard",
+                        dbc.Badge("Mtb", className="badge-mtb me-1"),
+                        "Rx",
                     ], className="display-5 fw-bold mb-3"),
                     html.P([
                         "Explore ",
@@ -454,7 +455,7 @@ def browse_by_drug_modal(drug_map: Dict[str, List[Dict]]) -> dbc.Modal:
         dbc.ModalBody([
             html.P(
                 "Select a drug to see the genes the WHO catalogue associates with "
-                "it, then click a gene to load it in the dashboard.",
+                "it, then click a gene to load it in the explorer.",
                 className="text-muted small",
             ),
             dbc.Accordion(items, start_collapsed=True, always_open=False, flush=True),

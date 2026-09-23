@@ -32,6 +32,9 @@ body {
     color: var(--primary-teal) !important;
     font-size: 1.4rem;
     letter-spacing: -0.025em;
+    /* Bootstrap keeps the brand on one line; let the long title wrap on
+       narrow screens instead of overflowing. */
+    white-space: normal;
 }
 
 .lab-logo {
@@ -139,7 +142,7 @@ body {
     border-radius: 6px;
 }
 
-.badge-tb {
+.badge-mtb {
     background-color: var(--primary-teal) !important;
     color: white !important;
 }
