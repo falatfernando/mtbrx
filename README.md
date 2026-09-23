@@ -132,7 +132,7 @@ Gene on - strand:
 ## Project Structure
 
 ```
-tbdashboard/
+mtbrx/
 ├── app.py                      # Dash application and callbacks
 ├── layout.py                   # Static layout, branding, modals and citation
 ├── genome_view.py              # Gene neighbourhood track, JBrowse and sequence panel

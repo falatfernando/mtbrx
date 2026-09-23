@@ -25,7 +25,7 @@ ATTRIBUTION = (
 )
 
 # --- Repositories and licence ----------------------------------------------
-PROJECT_REPO_URL = "https://github.com/falatfernando/tbdashboard"
+PROJECT_REPO_URL = "https://github.com/falatfernando/mtbrx"
 PERSONAL_GITHUB_URL = "https://github.com/falatfernando"
 # Set to the laboratory's GitHub organisation to surface a second repository
 # icon in the header and footer.

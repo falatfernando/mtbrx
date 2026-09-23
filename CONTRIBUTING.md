@@ -4,7 +4,7 @@ Thank you for your interest in contributing to MtbRx! We welcome community contr
 
 ## How to Report Bugs
 
-If you find a bug, please check the existing issues on our GitHub repository to see if it has already been reported. If not, you can open a new bug report using [GitHub Issues](https://github.com/falatfernando/tbdashboard/issues).
+If you find a bug, please check the existing issues on our GitHub repository to see if it has already been reported. If not, you can open a new bug report using [GitHub Issues](https://github.com/falatfernando/mtbrx/issues).
 
 When reporting a bug, please include:
 - A clear, descriptive title.
@@ -26,8 +26,8 @@ To submit code changes or documentation updates, please follow this process:
 1. **Fork the Repository**: Create your own copy of the repository on GitHub.
 2. **Clone the Fork**: Clone the repository to your local machine:
    ```bash
-   git clone https://github.com/YOUR-USERNAME/tbdashboard.git
-   cd tbdashboard
+   git clone https://github.com/YOUR-USERNAME/mtbrx.git
+   cd mtbrx
    ```
 3. **Create a Branch**: Create a new branch for your work:
    ```bash
