@@ -4,7 +4,7 @@ with open("requirements.txt") as f:
     install_requires = [line.strip() for line in f if line.strip() and not line.startswith("#")]
 
 setup(
-    name="tb-dashboard",
+    name="mtbrx",
     version="1.1.0",
     author="Fernando Falat",
     author_email="fernandofalat@proton.me",

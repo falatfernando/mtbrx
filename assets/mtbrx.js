@@ -13,7 +13,7 @@
     "use strict";
 
     var INTRON = /intron/i;
-    var ATTR = "data-tbdashboard-hidden";
+    var ATTR = "data-mtbrx-hidden";
 
     function hide(element) {
         if (!element || element.getAttribute(ATTR)) {

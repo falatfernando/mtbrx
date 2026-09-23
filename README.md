@@ -1,6 +1,6 @@
-# TB Dashboard - Genomic Resistance Explorer
+# MtbRx - Genomic Resistance Explorer
 
-TB Dashboard is a web-based genomic explorer for *Mycobacterium tuberculosis*, designed to bridge the gap between complex genomic data and clinical drug resistance interpretation. Built with Python Dash, it provides researchers and clinicians with an integrated platform to visualize genomic regions, calculate variant coordinates, and cross-reference mutations with the official WHO drug resistance catalogue. This app has it's on [![DOI](https://zenodo.org/badge/1199917151.svg)](https://doi.org/10.5281/zenodo.21035590) and a free hosted version is available at [Render](https://tbdashboard.onrender.com/).
+MtbRx is a web-based genomic explorer for *Mycobacterium tuberculosis*, designed to bridge the gap between complex genomic data and clinical drug resistance interpretation. Built with Python Dash, it provides researchers and clinicians with an integrated platform to visualize genomic regions, calculate variant coordinates, and cross-reference mutations with the official WHO drug resistance catalogue. This app has it's on [![DOI](https://zenodo.org/badge/1199917151.svg)](https://doi.org/10.5281/zenodo.21035590) and a free hosted version is available at [Render](https://tbdashboard.onrender.com/).
 ***Note: the free Render instance may take 30-60 seconds to wake up on first load.***
 
 ## References
@@ -144,7 +144,7 @@ tbdashboard/
 ├── README.md                   # This file
 ├── assets/
 │   ├── style.css              # Application styling
-│   ├── tbdashboard.js         # Removes residual intron controls from JBrowse dialogs
+│   ├── mtbrx.js               # Removes residual intron controls from JBrowse dialogs
 │   ├── lapam.png              # Laboratory logo
 │   └── usp.png                # Optional: USP crest, shown in the footer when present
 ├── tests/                      # pytest suite

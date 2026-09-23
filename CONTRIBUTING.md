@@ -1,6 +1,6 @@
-# Contributing to TB-Dashboard
+# Contributing to MtbRx
 
-Thank you for your interest in contributing to TB-Dashboard! We welcome community contributions to help improve this genomic explorer for *Mycobacterium tuberculosis* drug resistance mutations.
+Thank you for your interest in contributing to MtbRx! We welcome community contributions to help improve this genomic explorer for *Mycobacterium tuberculosis* drug resistance mutations.
 
 ## How to Report Bugs
 

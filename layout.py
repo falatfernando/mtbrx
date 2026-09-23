@@ -1,5 +1,5 @@
 """
-Static layout, branding and modal content for the TB Dashboard.
+Static layout, branding and modal content for the MtbRx.
 
 Institutional identity, attribution and citation material live here so that
 they are defined once and reused by the header and the footer (TASK-15).
@@ -39,13 +39,13 @@ DOI_URL = f"https://doi.org/{DOI}"
 CITATION_YEAR = "2026"
 CITATION_TEXT = (
     f"Falat Rangel, F., & Guimarães, A. M. de S. ({CITATION_YEAR}). "
-    f"TBDashboard: an interactive web-based interface for visual exploration of the "
+    f"MtbRx: an interactive web-based interface for visual exploration of the "
     f"WHO Mycobacterium tuberculosis drug resistance catalogue (Version {APP_VERSION}) "
     f"[Computer software]. Zenodo. {DOI_URL}"
 )
-CITATION_BIBTEX = f"""@software{{falat_tbdashboard,
+CITATION_BIBTEX = f"""@software{{falat_mtbrx,
   author    = {{Falat Rangel, Fernando and Guimar\\~aes, Ana Marcia de S\\'a}},
-  title     = {{TBDashboard: an interactive web-based interface for visual exploration
+  title     = {{MtbRx: an interactive web-based interface for visual exploration
                of the WHO \\emph{{Mycobacterium tuberculosis}} drug resistance catalogue}},
   version   = {{{APP_VERSION}}},
   year      = {{{CITATION_YEAR}}},
@@ -128,7 +128,7 @@ def usp_mark(app, height: int = 38) -> html.A:
 def _github_links(app, icon_height: int = 22) -> List[dbc.NavItem]:
     """Repository links for the header."""
     links = [
-        (PROJECT_REPO_URL, "code.png", "TBDashboard source code"),
+        (PROJECT_REPO_URL, "code.png", "MtbRx source code"),
         (PERSONAL_GITHUB_URL, "github.png", "Developer profile on GitHub"),
     ]
     if LAB_GITHUB_URL:
@@ -488,7 +488,7 @@ def cite_modal() -> dbc.Modal:
         ])),
         dbc.ModalBody([
             html.P(
-                "If TBDashboard supported your work, please cite the software and "
+                "If MtbRx supported your work, please cite the software and "
                 "the underlying data sources.",
                 className="text-muted small",
             ),
@@ -592,7 +592,7 @@ def footer(app) -> html.Footer:
                 ], className="d-flex align-items-center gap-4 mb-3 flex-wrap"),
                 html.P(ATTRIBUTION, className="fw-semibold mb-2 footer-attribution"),
                 html.P([
-                    f"TB Dashboard v{APP_VERSION} · ",
+                    f"MtbRx v{APP_VERSION} · ",
                     html.A(
                         dbc.Badge(LICENSE_NAME, className="badge-license"),
                         href=LICENSE_URL,

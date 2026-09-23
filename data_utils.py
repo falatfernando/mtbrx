@@ -1,5 +1,5 @@
 """
-Data loading and parsing utilities for TB Dashboard.
+Data loading and parsing utilities for MtbRx.
 Handles GFF3, catalogue master file, and genomic coordinates.
 
 *Mycobacterium tuberculosis* is a prokaryote: it has no splicing and no
@@ -380,7 +380,7 @@ class DataLoader:
                 out.write(
                     "\t".join([
                         gene.chromosome,
-                        "TBDashboard",
+                        "MtbRx",
                         "gene",
                         str(gene.start),
                         str(gene.end),

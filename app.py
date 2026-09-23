@@ -1,5 +1,5 @@
 """
-TB Dashboard - A Dash application for visualizing TB genomic data and drug resistance.
+MtbRx - A Dash application for visualizing TB genomic data and drug resistance.
 """
 import os
 from typing import Dict, List, Optional
@@ -46,7 +46,7 @@ app = dash.Dash(
     suppress_callback_exceptions=True,
     meta_tags=[{"name": "viewport", "content": "width=device-width, initial-scale=1"}]
 )
-app.title = "TB Dashboard | LaPAM"
+app.title = "MtbRx | LaPAM"
 
 # Expose the Flask server for gunicorn
 server = app.server

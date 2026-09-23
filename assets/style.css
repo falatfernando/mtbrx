@@ -550,7 +550,7 @@ body {
    ================================================================== */
 /* JBrowse renders its dialogs in a portal at body level, so this rule is
    intentionally global rather than scoped to the browser container. */
-[data-tbdashboard-hidden="intron"] {
+[data-mtbrx-hidden="intron"] {
     display: none !important;
 }
 
