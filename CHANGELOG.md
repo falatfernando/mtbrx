@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-09-23
+
+### Changed
+- **Renamed the project from TBDashboard to MtbRx**, to set it apart from the
+  many epidemiological "TB dashboards" in the literature. The application
+  title, header, hero banner, footer, citation text and BibTeX key
+  (`falat_mtbrx`), manuscript, preprint abstract, README, contributing guide
+  and package name (`mtbrx`) all use the new name.
+- The repository moved to `github.com/falatfernando/mtbrx`; the old
+  `tbdashboard` URL redirects.
+- The header now reads "*Mycobacterium tuberculosis* Genomic Resistance
+  Explorer" and wraps on narrow screens instead of overflowing.
+- `assets/tbdashboard.js` is now `assets/mtbrx.js`, and its marker attribute
+  is `data-mtbrx-hidden`.
+
+### Added
+- `CITATION.cff`, so GitHub shows a "Cite this repository" button and Zenodo
+  archives releases with the correct title and authors.
+
 ## [1.1.0] - 2026-09-21
 
 ### Added

@@ -5,7 +5,7 @@ with open("requirements.txt") as f:
 
 setup(
     name="mtbrx",
-    version="1.1.0",
+    version="1.2.0",
     author="Fernando Falat",
     author_email="fernandofalat@proton.me",
     description="A web-based genomic explorer for Mycobacterium tuberculosis drug resistance mutations using the WHO catalogue.",

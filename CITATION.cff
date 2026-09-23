@@ -1,0 +1,26 @@
+cff-version: 1.2.0
+message: "If MtbRx supported your work, please cite it using the metadata below."
+type: software
+title: "MtbRx: an interactive web-based interface for visual exploration of the WHO Mycobacterium tuberculosis drug resistance catalogue"
+abstract: >-
+  MtbRx is a web-based genomic explorer for Mycobacterium tuberculosis that
+  links genomic regions, variant coordinates and sequences with the WHO
+  catalogue of mutations associated with drug resistance.
+authors:
+  - given-names: Fernando
+    family-names: Falat Rangel
+    affiliation: "Laboratory of Applied Research in Mycobacteria (LaPAM), University of São Paulo"
+  - given-names: Ana Marcia de Sá
+    family-names: Guimarães
+    affiliation: "Laboratory of Applied Research in Mycobacteria (LaPAM), University of São Paulo"
+version: 1.2.0
+date-released: "2026-09-23"
+doi: 10.5281/zenodo.21035590
+license: GPL-3.0-only
+repository-code: "https://github.com/falatfernando/mtbrx"
+keywords:
+  - Mycobacterium tuberculosis
+  - drug resistance
+  - WHO mutation catalogue
+  - genomics
+  - Dash

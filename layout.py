@@ -12,7 +12,7 @@ from dash import dcc, html
 
 from data_utils import FIRST_LINE_DRUGS, GeneInfo
 
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 
 # --- Institutional identity -------------------------------------------------
 LAPAM_NAME = "Laboratory of Applied Research in Mycobacteria (LaPAM)"
